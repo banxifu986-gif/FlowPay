@@ -1,0 +1,37 @@
+# 本地密钥与私有配置，不进仓库
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Python 本地产物
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# 前端本地产物
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# 本地运行状态、日志和数据库文件
+var/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+
+# FlowPay 教学数据包：按 README 不随仓库分发
+/flowpay-dataset/
+
+# 黑马点评模拟数据的生成物；生成器代码、知识文档和 Benchmark 可保留
+/hmdp-dataset/data/generated/
