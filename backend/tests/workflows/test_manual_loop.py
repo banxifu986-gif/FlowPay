@@ -1,6 +1,6 @@
-"""s4 多轮协作：条件跨轮累积、缺项追问、补齐后继续、改口后按新条件重查。
+"""manual-loop 多轮协作：条件跨轮累积、缺项追问、补齐后继续、改口后按新条件重查。
 
-这些是 s4 相对 s3 的全部新行为，都不依赖模型的判断质量：条件登记、追问拦截、
+这些是多轮阶段的核心行为，都不依赖模型的判断质量：条件登记、追问拦截、
 去重和检查点由代码保证，因此可以用受控模型逐条钉住。
 """
 
@@ -19,7 +19,7 @@ from flowpay.core.json import JsonObject, require_list, require_object, require_
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.dataset import dataset_path, snapshot_ready
 from flowpay.router import create_stage
-from flowpay.workflows.s4 import Case, conditions_in
+from flowpay.workflows.manual_loop import Case, conditions_in
 
 from .fixtures import Model, Search, completion
 
@@ -36,12 +36,16 @@ pytestmark = pytest.mark.skipif(
 async def runtime(tmp_path: Path) -> AsyncIterator[tuple[SessionManager, Model, Search]]:
     """真实业务数据源 + 可控模型；检索仍用夹具。"""
     model, search = Model(), Search()
-    settings = Settings(tmp_path, tmp_path, workflow="s4", knowledge_collection_id="fixture")
+    settings = Settings(
+        tmp_path, tmp_path, workflow="manual-loop", knowledge_collection_id="fixture"
+    )
     resources = RuntimeResources(
         settings, sources=DataSources.from_config(POLICY, DATASET), retriever=search.for_run
     )
     store = EventStore(tmp_path / "sessions.sqlite")
-    manager = SessionManager(store, create_stage("s4", model, retrieval_input), settings, resources)
+    manager = SessionManager(
+        store, create_stage("manual-loop", model, retrieval_input), settings, resources
+    )
     try:
         yield manager, model, search
     finally:
@@ -270,7 +274,7 @@ async def test_identifiers_from_an_earlier_turn_are_not_treated_as_invented(
 ) -> None:
     """编号在追问那一轮给出、之后没有复述时，引用它同样不算编造。
 
-    s4 的条件本来就靠 ask_user 分轮收集，Case 跨轮记着它们；若引用核对只认本轮消息，
+    manual-loop 的条件本来就靠 ask_user 分轮收集，Case 跨轮记着它们；若引用核对只认本轮消息，
     模型一提这些编号就被驳回，而工具查空时它们永远进不了 seen，改写注定失败。
     """
     manager, model, _ = runtime

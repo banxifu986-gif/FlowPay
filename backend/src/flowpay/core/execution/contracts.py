@@ -1,4 +1,4 @@
-"""教学工作流与基座之间的契约。
+"""业务工作流与基座之间的契约。
 
 一"轮"（turn）是一次用户提交到一次回答提交，中间可以有多次模型请求、多次工具调用，
 也可以一次模型都不调。因此这里的 TurnInput / TurnResult 与 Chat Completions 的
@@ -59,7 +59,7 @@ class TurnInput:
 
 
 class Workflow(Protocol):
-    """一个课程阶段的执行契约，供 SessionManager 调用。
+    """一个阶段的执行契约，供 SessionManager 调用。
 
     id 与 version 决定哪些历史会话可以继续；版本变更后旧会话不再进入当前实现。
     """

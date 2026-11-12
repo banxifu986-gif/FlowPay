@@ -69,7 +69,7 @@ def require_dataset() -> Path:
 
 
 def snapshot_ready() -> bool:
-    """数据集完整且业务快照已经生成；任一不满足时 s3/s4 与相关测试无法运行。"""
+    """数据集完整且业务快照已经生成；任一不满足时 manual-loop 与相关测试无法运行。"""
     root = dataset_root()
     if root is None or missing_parts(root):
         return False

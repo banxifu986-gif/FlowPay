@@ -1,4 +1,7 @@
-"""s4 多轮协作：条件跨轮累积，缺项显式追问，用户改口则旧结论作废。"""
+"""manual-loop 多轮协作：单 Agent 手动编排调查循环。
+
+条件跨轮累积，缺项显式追问，用户改口则旧结论作废。
+"""
 
 from __future__ import annotations
 
@@ -311,8 +314,8 @@ class ToolAction:
     row_count: int
 
 
-class S4Workflow:
-    """在 s3 的调查循环上加一层跨轮状态：已知条件、已执行查询、待补充的缺项。"""
+class ManualLoopWorkflow:
+    """单 Agent 调查循环加跨轮状态：已知条件、已执行查询、待补充的缺项。"""
 
     id: str = "flowpay-multi-turn-rag"
     version: str = "1"
@@ -442,7 +445,7 @@ class S4Workflow:
             # 没有配对的 tool_calls，下一轮请求会被供应商拒绝。
             if pending:
                 return agent.pause(pending[0].question, **state, waiting_for=pending[0].missing)
-        raise ModelOutputError("s4 在模型调用预算内未生成有效回答")
+        raise ModelOutputError("manual-loop 在模型调用预算内未生成有效回答")
 
     @staticmethod
     def claim(agent: AgentTurn, done: set[str], tool: str, target: str) -> str | None:

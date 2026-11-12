@@ -11,7 +11,7 @@ CONFIG = Path(__file__).resolve().parents[3] / "backend/configs/local.toml"
 
 def test_demo_needs_no_external_resources(monkeypatch: pytest.MonkeyPatch) -> None:
     """日常配置和环境不能让模拟器调用真实模型或绑定知识集合。"""
-    monkeypatch.setenv("FLOWPAY_WORKFLOW", "s4")
+    monkeypatch.setenv("FLOWPAY_WORKFLOW", "manual-loop")
     monkeypatch.delenv("FLOWPAY_MODEL_API_KEY", raising=False)
     settings = configured_runtime(Arguments(config=CONFIG))
     assert settings.workflow == "demo"

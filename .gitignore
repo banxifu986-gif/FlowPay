@@ -30,7 +30,7 @@ var/
 *.db
 *.dump
 
-# FlowPay 教学数据包：按 README 不随仓库分发
+# FlowPay 数据包：按 README 不随仓库分发
 /flowpay-dataset/
 
 # 黑马点评模拟数据的生成物；生成器代码、知识文档和 Benchmark 可保留

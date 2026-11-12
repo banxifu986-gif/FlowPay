@@ -44,9 +44,9 @@ def ask_event(missing: list[str], run: str = "run_1") -> Event:
 
 
 def test_chunk_alignment_skips_the_title_only_block() -> None:
-    """benchmark 把纯标题节算一块，课程分块器跳过它，因此编号整体差一。
+    """benchmark 把纯标题节算一块，运行时分块器跳过它，因此编号整体差一。
 
-    对齐靠小节标题而不是编号：纯标题块映射到空串，调用方据此知道课程侧没有对应物。
+    对齐靠小节标题而不是编号：纯标题块映射到空串，调用方据此知道运行侧没有对应物。
     """
     alignment = evidence.chunk_alignment()
     assert alignment["doc:KB-BR-001#c001"] == ""
@@ -55,7 +55,7 @@ def test_chunk_alignment_skips_the_title_only_block() -> None:
 
 
 def test_evidence_matches_by_heading_not_by_number() -> None:
-    """课程取到某小节时，应命中 benchmark 里同标题的那一块。"""
+    """运行时取到某小节时，应命中 benchmark 里同标题的那一块。"""
     alignment = evidence.chunk_alignment()
     events = [
         event(
@@ -80,7 +80,7 @@ def test_business_identifiers_come_from_tool_results_only() -> None:
 
 
 def test_waiting_user_is_the_precise_clarification_signal() -> None:
-    """s4 以 waiting_user 结束本轮时，缺项由 ask_user 的 missing 字段直接给出。"""
+    """manual-loop 以 waiting_user 结束本轮时，缺项由 ask_user 的 missing 字段直接给出。"""
     events = [ask_event(["account_id", "payment_id"])]
     signal, categories = conversation.detect("waiting_user", "请问账户？", events, "run_1", set())
     assert signal == "waiting_user"
@@ -153,9 +153,9 @@ def row(identifier: str, *, multi: bool, passed: bool) -> Row:
 def test_overview_separates_single_turn_from_multi_turn() -> None:
     """单轮与多轮必须分开统计。
 
-    多轮题全部要求实例诊断，奖励的能力与单轮文档题不同；合并计分会把"某一级擅长
-    哪类题"这个唯一有意义的结论抹平——实测里 s2 的强项在单轮、s4 在多轮，
-    合计分数却看不出差别。
+    多轮题全部要求实例诊断，奖励的能力与单轮文档题不同；合并计分会把"某阶段擅长
+    哪类题"这个唯一有意义的结论抹平——实测里单轮阶段的强项在单轮、manual-loop
+    在多轮，合计分数却看不出差别。
     """
     rows = [
         row("a", multi=False, passed=True),
@@ -163,5 +163,5 @@ def test_overview_separates_single_turn_from_multi_turn() -> None:
         row("c", multi=True, passed=True),
         row("d", multi=True, passed=True),
     ]
-    table = "\n".join(overview({"s4": rows}))
-    assert "| s4 | 1/2 | 2/2 | 3/4 | 0/4 |" in table
+    table = "\n".join(overview({"manual-loop": rows}))
+    assert "| manual-loop | 1/2 | 2/2 | 3/4 | 0/4 |" in table

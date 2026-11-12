@@ -1,4 +1,4 @@
-# 课程后端：依赖在镜像里装好，源码运行时挂载进来，改了立刻重载。
+# 后端：依赖在镜像里装好，源码运行时挂载进来，改了立刻重载。
 FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /usr/local/bin/uv

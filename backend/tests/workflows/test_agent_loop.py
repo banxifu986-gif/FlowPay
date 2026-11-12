@@ -37,7 +37,7 @@ def successful_search(identifier: str = "good") -> list[ChatCompletion | Excepti
         "truncated",
     ],
 )
-@pytest.mark.parametrize("stage", ["s4"])
+@pytest.mark.parametrize("stage", ["manual-loop"])
 async def test_model_can_repair_its_own_request(tmp_path: Path, stage: str, error: str) -> None:
     """坏参数不执行检索，错误以匹配原 ID 的 tool 消息返回；坏回答走模型反馈。"""
     model, search = Model(), Search()
@@ -88,7 +88,7 @@ async def test_model_can_repair_its_own_request(tmp_path: Path, stage: str, erro
         resources.close()
 
 
-@pytest.mark.parametrize("stage", ["s4"])
+@pytest.mark.parametrize("stage", ["manual-loop"])
 async def test_budget_is_per_turn_and_tool_history_survives(tmp_path: Path, stage: str) -> None:
     """一次模型多工具请求最多执行三次；下一轮恢复历史后重新开放工具。"""
     model, search = Model(), Search()
@@ -124,7 +124,7 @@ async def test_budget_is_per_turn_and_tool_history_survives(tmp_path: Path, stag
         resources.close()
 
 
-@pytest.mark.parametrize("stage", ["s4"])
+@pytest.mark.parametrize("stage", ["manual-loop"])
 async def test_current_state_is_saved_and_collection_mismatch_is_rejected(
     tmp_path: Path, stage: str
 ) -> None:
@@ -144,7 +144,7 @@ async def test_current_state_is_saved_and_collection_mismatch_is_rejected(
         await workflow.run(TurnInput("继续", [], outcome.saved_state), moved)
 
 
-@pytest.mark.parametrize("stage", ["s4"])
+@pytest.mark.parametrize("stage", ["manual-loop"])
 async def test_cancel_after_success_keeps_previous_checkpoint(
     tmp_path: Path,
     stage: str,
@@ -186,7 +186,7 @@ async def test_cancel_after_success_keeps_previous_checkpoint(
         resources.close()
 
 
-@pytest.mark.parametrize("stage", ["s4"])
+@pytest.mark.parametrize("stage", ["manual-loop"])
 async def test_unknown_citation_does_not_retry_or_discard_answer(
     tmp_path: Path, stage: str
 ) -> None:
@@ -206,7 +206,7 @@ async def test_unknown_citation_does_not_retry_or_discard_answer(
     assert not any(e["type"] == "answer.rejected" for e in store.read("s"))
 
 
-@pytest.mark.parametrize("stage", ["s4"])
+@pytest.mark.parametrize("stage", ["manual-loop"])
 async def test_previous_workflow_version_requires_new_session(tmp_path: Path, stage: str) -> None:
     """版本判断由会话管理器统一负责，旧版本会话不能进入当前阶段循环。"""
     from flowpay.core.execution.errors import Conflict

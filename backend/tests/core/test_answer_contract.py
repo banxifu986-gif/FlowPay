@@ -109,7 +109,7 @@ async def test_invalid_stream_is_not_committed_as_an_answer(tmp_path: Path) -> N
 def test_messages_refuse_to_split_a_tool_round() -> None:
     """工具结果没回填完就插别的消息会拆散配对，供应商会拒绝整个请求。
 
-    s4 的追问发生在工具执行中途，正是这个坑的形状；护栏让它变成明确错误。
+    manual-loop 的追问发生在工具执行中途，正是这个坑的形状；护栏让它变成明确错误。
     """
     log = MessageLog([{"role": "system", "content": "system"}])
     log.add_system_message("此时没有待回填的工具调用")

@@ -1,2 +1,2 @@
-# FlowPay 教学后端包，通用基座与课程应用分别组织。
-"""FlowPay teaching project."""
+# FlowPay 后端包，通用基座与应用层分别组织。
+"""FlowPay project."""
