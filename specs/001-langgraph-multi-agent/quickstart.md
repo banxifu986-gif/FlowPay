@@ -25,7 +25,7 @@ make quality
 | SC-1 规则短路零分类调用 | 测试消息带业务编号，断言 Model.requests 中无 set_intent 调用 |
 | SC-2 闲聊零工具调用 | 断言该轮请求不带 tools 字段 |
 | SC-3 并行不慢于串行 | max_concurrency=1 与默认并行的轮内耗时对照（SlowSearch 固定延时） |
-| SC-4 引用可核查 | 命中片段随 `TurnResult.evidence` 返回（测试断言 evidence 含片段编号）；回答里的业务记录编号由 disputed 机制核对，文档引用编号协议层不改写正文、由界面据证据清单标注（答案契约） |
+| SC-4 引用可核查 | 命中片段随 `TurnResult.evidence` 返回；synthesize 合成后按 shared.seen 核对回答中的记录编号，编造的回传纠正重试一次（重试仍编造则由界面标注兜底）；文档引用编号协议层不改写正文，由界面据证据清单标注（答案契约） |
 | SC-5 意图切换条件保留 | 排查→闲聊→排查序列，断言 case 键不变、无重复索要 |
 | SC-6 查询去重 | 相同 tool:target 二次发起被 claim 拒绝 |
 | SC-7 既有测试全绿 | make test |

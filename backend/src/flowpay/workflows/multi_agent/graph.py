@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from openai.types.chat import ChatCompletionMessageParam
 
+from flowpay.core.agent.turn import record_ids
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
@@ -29,7 +30,13 @@ from flowpay.core.llm.chat import ChatModel
 from flowpay.workflows.manual_loop import Case, briefing, conditions_in, restore_queried
 
 from .intent import CLASSIFY_PROMPT, DEFAULT_INTENT, SET_INTENT, conditions_route, read_intent
-from .investigation import doc_worker_node, plan_node, sql_worker_node, synthesize_node
+from .investigation import (
+    discard_stale,
+    doc_worker_node,
+    plan_node,
+    sql_worker_node,
+    synthesize_node,
+)
 from .simple import chitchat_node, doc_qa_node
 from .state import GraphState, NodeOutput, SharedTurn, restore_findings
 
@@ -148,7 +155,12 @@ class MultiAgentWorkflow:
                 turn.saved_state.get("evidence") or [], runtime.collection_id
             ),
         )
-        note = briefing(shared.case, shared.case.apply(conditions_in(turn.user_message)))
+        revision = shared.case.apply(conditions_in(turn.user_message))
+        discard_stale(shared, revision.changed)
+        note = briefing(shared.case, revision)
+        # 编造引用核对的材料：用户本轮给出的编号，加上 case 里已有的编号字段值。
+        shared.seen.update(record_ids(turn.user_message))
+        shared.seen.update(shared.case.known.values())
         state: GraphState = {
             "user_message": turn.user_message,
             "saved_state": turn.saved_state,

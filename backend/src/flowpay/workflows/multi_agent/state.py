@@ -103,6 +103,9 @@ class SharedTurn:
     case: Case = field(default_factory=Case)
     done: set[str] = field(default_factory=set)
     findings: list[Finding] = field(default_factory=list)
+    # 出现过即可引用的记录编号：用户消息与 case 给出的，加上调查员工具实际返回的。
+    # 汇总节点据此核对最终回答里的编号，堵住"报告转述时编造记录"的缺口（SC-4）。
+    seen: set[str] = field(default_factory=set)
     retrieved: PassageSet = field(default_factory=PassageSet)
     budget: Budget = field(default_factory=lambda: Budget(16, 12))
     actions: list[ToolAction] = field(default_factory=list)

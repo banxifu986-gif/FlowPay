@@ -49,8 +49,9 @@ Date: 2026-11-12。类型归属见 plan.md Project Structure；本文定义字�
 | case | `Case`（复用 manual_loop） | 跨轮已知条件；每轮自 saved_state["case"] restore，意图切换不清空 |
 | done | `set[str]` | 查询去重键（`tool:target` casefold）；自 saved_state["queried"] restore |
 | findings | `list[Finding]` | 本轮新增 + 上轮恢复 |
+| seen | `set[str]` | 可引用记录编号：用户消息与 case 给出的 + 调查员工具返回的；synthesize 据此核对最终回答（SC-4），不跨轮持久化 |
 | retrieved | `PassageSet` | 共享引用池；自 saved_state["evidence"] restore |
-| budget | `Budget(16, 12)` | 全体 Agent 共享；plan/ synthesize 前 extend 加码 |
+| budget | `Budget(16, 12)` | 全体调查员共享；plan 按任务数抬工具额度（12+3n）；synthesize 不占预算（research R3 实现口径） |
 | actions | `list[ToolAction]` | trace 用 |
 | pending | `list[AskUserResult]` | ask_user 去向；置位后短路 worker 循环 |
 
@@ -84,9 +85,10 @@ Date: 2026-11-12。类型归属见 plan.md Project Structure；本文定义字�
 
 ## 状态迁移
 
-1. **route**：`saved_state` + `user_message` → intent（规则短路优先）。
+1. **route**：`saved_state` + `user_message` → intent（规则短路优先，只认业务编号前缀；环境词不参与路由，仅由 case 累积）。
 2. **chitchat/doc_qa**：单节点产出 answer → END；轮末照常重建检查点（case/queried/findings 等效携带——闲聊与文档消息不含业务编号，case.apply 为空操作），并新增 stop_reason/findings 键。`TurnResult.evidence` 恒为共享片段池全量（`shared.retrieved.all()`），因此这些轮会把此前轮次检索的片段一并交给界面做引用展开。
 3. **plan → Send → worker → synthesize**：
    - 正常：worker 产出 reports → synthesize 合成 answer → END。
+   - 编造核对（SC-4）：synthesize 合成后核对回答中的记录编号是否都在 shared.seen，对不上的回传纠正重试一次；重试仍编造则接受，由界面据证据清单标注。
    - 追问：worker 内 pending 置位 → 该 worker 短路收尾 → 其余 Send worker 自然收束 → synthesize 跳过合成、置 waiting → run() 返回 `status="waiting_user"`。
 4. **预算耗尽**：claim 拒绝 + `may_think` 短路 → synthesize 以现有材料合成部分结论（参照 manual-loop"依据不足给部分结论"语义）。

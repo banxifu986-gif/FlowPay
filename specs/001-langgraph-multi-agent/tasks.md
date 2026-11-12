@@ -54,6 +54,14 @@
 - [x] T027 容器全量回归：13 failed / 157 passed / 20 skipped，失败集合与 T003 基线逐条一致，无扩大
 - [x] T028 HTTP 冒烟（quickstart 五场景 + 追问后继续）：真实模型六轮全绿——intent.decided×6、SQL 24 次/文档检索 14 次、13 条去重拦截（SC-6 生效证据）、waiting_user 追问与补条件续查、findings/queried/case/evidence 检查点五键齐全；模型走火山 coding plan 端点 `https://ark.cn-beijing.volces.com/api/coding/v3` + `deepseek-v4-flash-ga-260731`
 
+## Post-Review Fixes（2026-11-12 代码审查后回流）
+
+- [x] R01 [HIGH] synthesize 按 shared.seen 核对回答中的记录编号，编造回传纠正重试一次（SC-4 防线接回）
+- [x] R02 [MEDIUM] 意图规则短路只认业务编号前缀，环境词不参与路由（FR-2/FR-9）
+- [x] R03 [MEDIUM] 改口换账户/环境时 discard_stale 作废旧 scope 的 findings 与 done 键（US4）
+- [x] R04 [MEDIUM] SupervisorPlan.tasks 上限 4，超限按空任务兜底
+- [x] R05 [LOW] 契约措辞（findings 条目级严格）、测试断言钉准调查员请求、计时测试形状断言、data-model budget 行描述
+
 ## Dependencies
 
 ```text

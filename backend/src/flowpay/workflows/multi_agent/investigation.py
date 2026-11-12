@@ -15,6 +15,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from flowpay.core.agent import AgentTurn
+from flowpay.core.agent.turn import DISPUTE, record_ids
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import log_tool, sql_tool
 from flowpay.core.execution.contracts import TurnInput
@@ -34,9 +35,11 @@ from flowpay.core.llm.chat.messages import answer_text
 from flowpay.core.tools import ToolInputError
 from flowpay.workflows.manual_loop import (
     LOG_TOOLS,
+    SCOPE_FIELDS,
     SQL_TOOLS,
     AskUserArguments,
     AskUserResult,
+    ConditionField,
     ToolAction,
     ask_user_tool,
 )
@@ -90,10 +93,10 @@ class SupervisorTask(BaseModel):
 
 
 class SupervisorPlan(BaseModel):
-    """set_tasks 的完整参数；tasks 为空表示不需要新调查。"""
+    """set_tasks 的完整参数；tasks 为空表示不需要新调查，至多 4 个子任务。"""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-    tasks: list[SupervisorTask]
+    tasks: list[SupervisorTask] = Field(max_length=4)
 
 
 # 与 set_intent 同一装配手法：Schema 由 pydantic 模型生成，extra 约束显式写出。
@@ -153,6 +156,25 @@ def passage_digest(passages: list[Passage]) -> str:
     return f"{len(passages)} 个片段；首片 {passages[0].id}"
 
 
+def discard_stale(shared: SharedTurn, changed: dict[ConditionField, str]) -> None:
+    """改口换账户或环境时作废旧 scope 下的查询结论与去重键（US4 改口语义）。
+
+    Case 只丢旧编号，findings/done 里按旧条件执行的结论还留着；不同步清理的话，
+    简报会一边宣布编号作废、一边列出旧账户的"已执行结论"鼓励模型复用。
+    """
+    stale = [
+        f"{name}={value}".casefold() for name, value in changed.items() if name in SCOPE_FIELDS
+    ]
+    if not stale:
+        return
+    shared.findings = [
+        finding
+        for finding in shared.findings
+        if not any(s in finding.target.casefold() for s in stale)
+    ]
+    shared.done = {key for key in shared.done if not any(s in key for s in stale)}
+
+
 def turn_briefing(shared: SharedTurn, case_note: str | None) -> str | None:
     """跨轮简报：已知条件加已执行查询的结论摘要，注入调查员与汇总节点。
 
@@ -191,9 +213,11 @@ async def investigate(
     while agent.may_think() and not shared.pending:
         reply = await agent.think()
         if reply.is_answer:
+            shared.seen.update(agent.seen)
             return {"reports": [WorkerReport(worker, reply.text)]}
         for action in reply.actions:
             agent.observe(await agent.perform(action))
+        shared.seen.update(agent.seen)
     return {"reports": []}
 
 
@@ -381,6 +405,16 @@ def synthesize_node(
             {"role": "user", "content": content},
         ]
         completion, _ = await runtime.chat(model).call(messages)
-        return {"answer": answer_text(completion), "waiting": False}
+        answer = answer_text(completion)
+        invented = sorted({name for name in record_ids(answer) if name not in shared.seen})
+        if invented:
+            # 编造引用核对（SC-4）：shared.seen 收着用户给出与工具返回过的全部编号，
+            # 对不上的回传纠正后重试一次；重试仍编造则接受，由界面据证据清单标注。
+            messages.append(
+                {"role": "system", "content": DISPUTE.format(names="、".join(invented))}
+            )
+            completion, _ = await runtime.chat(model).call(messages)
+            answer = answer_text(completion)
+        return {"answer": answer, "waiting": False}
 
     return node

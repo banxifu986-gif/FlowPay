@@ -10,7 +10,7 @@ from typing import ClassVar, Literal
 from openai.types.chat import ChatCompletion, ChatCompletionToolParam
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from flowpay.workflows.manual_loop import conditions_in
+from flowpay.workflows.manual_loop import IDENTIFIER
 
 DEFAULT_INTENT = "troubleshoot"
 
@@ -54,5 +54,9 @@ def read_intent(completion: ChatCompletion) -> IntentDecision | None:
 
 
 def conditions_route(user_message: str) -> str | None:
-    """规则短路：消息里带业务编号时直接判为排查；未命中返回 None 交给 LLM。"""
-    return DEFAULT_INTENT if conditions_in(user_message) else None
+    """规则短路：消息里出现业务编号（编号前缀正则）时直接判为排查；未命中返回 None 交给 LLM。
+
+    只认编号前缀，不认"生产环境"这类环境词（FR-2 字面口径）：环境词只由 case 累积，
+    参与路由会把带环境字样的文档问题误判成排查，拿到无引用的回答（FR-9）。
+    """
+    return DEFAULT_INTENT if IDENTIFIER.search(user_message) else None

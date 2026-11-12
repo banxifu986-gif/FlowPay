@@ -56,6 +56,8 @@ def restore_findings(state: object) -> list[Finding]    # 恢复跨轮结论摘�
 # investigation.py
 def claim(shared: SharedTurn, tool: str, target: str) -> str | None
     """纯同步临界区：check-then-act 之间不得 await；获准返回 None 并记账，拒绝返回说明文案。"""
+def discard_stale(shared: SharedTurn, changed: dict[ConditionField, str]) -> None
+    """改口换账户/环境时作废旧 scope 下的 findings 与 done 键（US4 改口语义）。"""
 
 # graph.py（节点装配）
 def dispatch(state: GraphState) -> list[Send] | str     # plan 之后的条件边：按 kind Send 分发；空任务返回 "synthesize"
@@ -88,7 +90,7 @@ def dispatch(state: GraphState) -> list[Send] | str     # plan 之后的条件�
 Schema 见 data-model.md。兼容性规则：
 
 - `case` / `queried` / `evidence` 三键与 manual-loop 产出完全同构（MultiAgentWorkflow 既能恢复 manual-loop 写下的检查点，也能被相同键恢复——不承诺跨 workflow id 恢复，identity 校验在前）。
-- `findings` / `stop_reason` 为新增键；恢复端对缺键宽容（按空处理）。
+- `findings` / `stop_reason` 为新增键；恢复端对缺键宽容（按空处理），单条 finding 内部结构严格（与 `Case.restore` 同口径）。
 - 序列化只用 `flowpay.core.json` helper；workflows 层不得直引 `json`/`os`（test_boundaries 强制）。
 
 ## 6. 边界约束（门禁）

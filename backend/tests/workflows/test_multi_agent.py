@@ -290,7 +290,10 @@ async def run_timed_turn(root: Path, max_concurrency: int | None) -> float:
         sid = require_text((await manager.create_session())["id"])
         start = perf_counter()
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
-        return perf_counter() - start
+        elapsed = perf_counter() - start
+        # 形状断言：两个任务目标不同，无论 FIFO 如何错位，两次检索都必须真的执行。
+        assert len(search.queries) == 2
+        return elapsed
     finally:
         await manager.shutdown()
         resources.close()
@@ -423,9 +426,145 @@ async def test_conditions_survive_intent_switch(tmp_path: Path) -> None:
         view = await manager.get_session(sid)
         known = require_object(require_object(view["state"]["case"])["known"])
         assert set(known) == {"environment", "account_id", "payment_id"}
-        # 第三轮调查员的请求里带简报：已知条件逐条列全，明确不重复索要。
-        worker_request = str(model.requests[4]["messages"])
+        # 第三轮调查员（requests[5]，requests[4] 是协调者）的请求里带简报：
+        # 已知条件逐条列全，明确不重复索要。
+        worker_request = str(model.requests[5]["messages"])
         assert "acct_bg_001" in worker_request and "不要再次索要" in worker_request
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_synthesize_disputes_invented_ids(tmp_path: Path) -> None:
+    """汇总回答里出现工具从未返回过的记录编号时回传纠正并重试一次（SC-4）。"""
+    model, search = Model(), Search()
+    manager, resources = make_manager(tmp_path, model, search)
+    model.responses = [
+        completion(calls=[tasks_call("plan_1", [])]),
+        grounded("查到 pay_bg_0099_7777 已成功，依据充分。"),
+        grounded("修正后的结论。"),
+    ]
+    try:
+        sid = require_text((await manager.create_session())["id"])
+        await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
+        view = await manager.get_session(sid)
+        assert require_text(view["status"]) == "completed"
+        assert require_text(view["messages"][-1]["content"]) == (
+            "修正后的结论。\n\n[doc:RULE-1#c001]"
+        )
+        assert len(model.requests) == 3
+        correction = str(model.requests[2]["messages"])
+        assert "只引用工具实际返回的记录" in correction and "pay_bg_0099_7777" in correction
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_environment_word_does_not_short_circuit(tmp_path: Path) -> None:
+    """带"生产环境"字样的文档问题不进排查短路，仍走 LLM 分类与文档问答（FR-2/FR-9）。"""
+    model, search = Model(), Search()
+    manager, resources = make_manager(tmp_path, model, search)
+    model.responses = [
+        completion(calls=[intent_call("intent_1", "docs")]),
+        grounded("HTTP 410 后禁用端点。"),
+    ]
+    try:
+        sid = require_text((await manager.create_session())["id"])
+        await say(manager, sid, "first", "生产环境的 Webhook 重试策略是什么？")
+        view = await manager.get_session(sid)
+        assert require_text(view["status"]) == "completed"
+        definition = require_object(require_list(model.requests[0]["tools"])[0])
+        assert require_object(definition["function"])["name"] == "set_intent"
+        assert len(search.queries) == 1
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_plan_task_list_is_capped(tmp_path: Path) -> None:
+    """协调者拆解超过 4 个子任务时参数校验失败，按空任务兜底直接汇总。"""
+    model, search = Model(), Search()
+    manager, resources = make_manager(tmp_path, model, search)
+    tasks: list[JsonObject] = [{"kind": "docs", "objective": f"任务{i}"} for i in range(5)]
+    model.responses = [completion(calls=[tasks_call("plan_1", tasks)]), grounded("直接回答。")]
+    try:
+        sid = require_text((await manager.create_session())["id"])
+        await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
+        view = await manager.get_session(sid)
+        assert require_text(view["status"]) == "completed"
+        assert len(model.requests) == 2
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+@pytest.mark.skipif(not snapshot_ready(), reason="business dataset snapshot is not available")
+async def test_condition_revision_discards_stale_findings(tmp_path: Path) -> None:
+    """改口换账户后：旧账户的查询结论被作废，简报不再列出，同条件可重查（US4）。"""
+    model, search = Model(), Search()
+    manager, resources = make_manager(
+        tmp_path, model, search, sources=DataSources.from_config(POLICY, DATASET)
+    )
+    sql_task: list[JsonObject] = [{"kind": "sql", "objective": "查这笔支付的状态"}]
+    model.responses = [
+        completion(calls=[tasks_call("plan_1", sql_task)]),
+        completion(
+            calls=[
+                {
+                    "id": "pay_1",
+                    "type": "function",
+                    "function": {
+                        "name": "query_payments",
+                        "arguments": json.dumps(
+                            {
+                                "account_id": "acct_bg_001",
+                                "environment": "production",
+                                "filters": {"payment_id": "pay_bg_001_0003"},
+                            }
+                        ),
+                    },
+                }
+            ]
+        ),
+        grounded("bg_001 报告。"),
+        grounded("已根据调查报告回答。"),
+        completion(calls=[tasks_call("plan_2", sql_task)]),
+        completion(
+            calls=[
+                {
+                    "id": "pay_2",
+                    "type": "function",
+                    "function": {
+                        "name": "query_payments",
+                        "arguments": json.dumps(
+                            {
+                                "account_id": "acct_bm_030",
+                                "environment": "production",
+                                "filters": {"payment_id": "pay_bg_001_0003"},
+                            }
+                        ),
+                    },
+                }
+            ]
+        ),
+        grounded("bm_030 报告。"),
+        grounded("已根据调查报告回答。"),
+    ]
+    try:
+        sid = require_text((await manager.create_session())["id"])
+        await say(manager, sid, "first", "生产环境 acct_bg_001 支付 pay_bg_001_0003 没收到通知")
+        first = await manager.get_session(sid)
+        findings = require_list(first["state"]["findings"])
+        assert any("acct_bg_001" in require_text(require_object(f)["target"]) for f in findings)
+        await say(manager, sid, "second", "说错了，是 acct_bm_030")
+        view = await manager.get_session(sid)
+        assert require_text(view["status"]) == "completed"
+        findings = require_list(view["state"]["findings"])
+        assert findings and all(
+            "acct_bg_001" not in require_text(require_object(f)["target"]) for f in findings
+        )
+        # 第二轮调查员的简报里不再出现旧账户的结论行。
+        assert "acct_bg_001" not in str(model.requests[5]["messages"])
     finally:
         await manager.shutdown()
         resources.close()
