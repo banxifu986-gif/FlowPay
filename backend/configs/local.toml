@@ -2,9 +2,9 @@
 data_dir = "../../var/live"
 # 默认指向仓库同级解包的数据集；通常由 FLOWPAY_DATASET_ROOT 覆盖。
 dataset_path = "../../dataset/data"
-# s0 已发布的业务知识快照，s1 从这里开始检索。
+# 已发布的业务知识快照，排查阶段从这里开始检索。
 knowledge_collection_id = "flowpay_docs_v1_qwen3_06b"
-# s4 的业务工具按这份策略访问 dataset；只读、按操作名登记、表列白名单。
+# 业务阶段（multi-agent / manual-loop）按这份策略访问 dataset；只读、按操作名登记、表列白名单。
 sources_config = "../policies/sources.toml"
 host = "127.0.0.1"
 port = 8000

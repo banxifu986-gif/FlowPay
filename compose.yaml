@@ -1,4 +1,4 @@
-name: flowpay-teaching
+name: flowpay
 
 # 数据集不随仓库分发：在 .env 里把 FLOWPAY_DATASET_ROOT 指向数据集目录或 .tar.gz / .zip。
 # make up 会自动解开数据包，并解析成绝对目录路径再挂载。
@@ -9,7 +9,7 @@ services:
     image: pgvector/pgvector:0.8.2-pg17
     environment:
       POSTGRES_USER: flowpay_admin
-      # 库只发布在 127.0.0.1，里面是公开的教学数据，口令固定即可，用户不用配。
+      # 库只发布在 127.0.0.1，里面是公开的示例数据，口令固定即可，用户不用配。
       POSTGRES_PASSWORD: ${FLOWPAY_DB_PASSWORD:-flowpay_local}
       POSTGRES_DB: flowpay_knowledge
     ports:
@@ -59,7 +59,7 @@ services:
       FLOWPAY_CONFIG: /app/backend/configs/local.toml
       FLOWPAY_HOST: 0.0.0.0
       FLOWPAY_DATA_DIR: /app/var/live
-      FLOWPAY_WORKFLOW: ${STAGE:-s4}
+      FLOWPAY_WORKFLOW: ${STAGE:-multi-agent}
       # 默认用下面 compose 起的 ollama 服务；换成远端 Ollama 就在 .env 里覆盖这一项。
       # 端口必须是 11434：知识集合的向量是在该端口建的，换端口会被向量空间校验判为不兼容。
       FLOWPAY_EMBEDDING_BASE_URL: ${FLOWPAY_EMBEDDING_BASE_URL:-http://ollama:11434/v1}

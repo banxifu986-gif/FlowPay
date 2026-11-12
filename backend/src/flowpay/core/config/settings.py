@@ -42,7 +42,7 @@ class Settings:
 
     data_dir: Path
     dataset_path: Path
-    workflow: str = "s4"
+    workflow: str = "multi-agent"
     app_env: str = "development"
     log_level: str = "INFO"
     host: str = "127.0.0.1"

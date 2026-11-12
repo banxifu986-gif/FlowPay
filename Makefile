@@ -12,8 +12,8 @@ PYTHON ?= python3
 VENV   := backend/.venv/bin/python
 CONFIG := backend/configs/local.toml
 
-STAGE      ?= s1
-STAGES     ?= s1,s2,s3,s4
+STAGE      ?= multi-agent
+STAGES     ?= multi-agent
 PER_TYPE   ?= 2
 SETUP_ARGS ?=
 
@@ -39,7 +39,7 @@ help: ## 列出可用目标
 		/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo
 
-##@ 教程路径
+##@ 全栈运行
 
 up: ## 起全栈：校验 .env、备好数据库、知识库与嵌入模型，再起全部容器
 	$(PYTHON) scripts/start.py $(if $(BUILD),--build)
@@ -65,7 +65,7 @@ db-up: ## 只起 PostgreSQL（make up 会自己带上它）
 db-setup: ## 执行知识库结构迁移与角色授权（setup 已包含，升级旧库时单独跑）
 	@$(with-env) $(VENV) scripts/database.py setup
 
-run: ## 课程后端（STAGE 可选 s1—s4）
+run: ## 后端服务（STAGE 可选 multi-agent / manual-loop）
 	@$(with-env) backend/.venv/bin/flowpay --config $(CONFIG) --stage $(STAGE)
 
 frontend: ## 前端开发服务器
@@ -85,7 +85,7 @@ benchmark: ## 数据集 300 题分层对照（PER_TYPE=0 表示全量）
 blueprints: ## 把 300 题渲染成可读 Markdown，落在数据集的 benchmark/readable/
 	@$(with-env) $(PYTHON) scripts/benchmark/render.py
 
-demo: ## 起确定性契约后端，只验协议不跑课程阶段（需先 make setup）
+demo: ## 起确定性契约后端，只验协议不跑正式阶段（需先 make setup）
 	$(VENV) scripts/demo.py --config $(CONFIG)
 
 smoke: ## 对着已在跑的后端验 HTTP/SSE：断线回放、取消与继续

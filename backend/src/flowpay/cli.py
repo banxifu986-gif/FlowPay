@@ -39,10 +39,10 @@ def app_factory() -> object:
 
 
 def main() -> None:
-    """启动单进程课程服务；默认 s4，模拟验收有独立脚本入口。"""
-    parser = argparse.ArgumentParser(description="FlowPay local teaching runtime")
+    """启动单进程后端服务；默认 multi-agent，模拟验收有独立脚本入口。"""
+    parser = argparse.ArgumentParser(description="FlowPay local runtime")
     parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--stage", help="课程阶段，目前支持 s4")
+    parser.add_argument("--stage", help="运行阶段，支持 multi-agent 与 manual-loop")
     args = parser.parse_args(namespace=Arguments())
     try:
         settings = configured_runtime(args)
@@ -52,4 +52,3 @@ def main() -> None:
     logging.basicConfig(level=settings.log_level)
     app = create_app(settings, workflow)
     uvicorn.run(app, host=settings.host, port=settings.port, workers=1, timeout_graceful_shutdown=5)
-

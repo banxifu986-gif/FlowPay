@@ -1,4 +1,4 @@
-"""装配课程需要的具体客户端；阶段选择交给 router，运行资源统一管理连接。"""
+"""装配运行需要的具体客户端；阶段选择交给 router，运行资源统一管理连接。"""
 
 import os
 
@@ -19,7 +19,7 @@ def create_workflow(settings: Settings) -> Workflow:
     if settings.embedding.name != "qwen3-embedding:0.6b":
         raise ValueError("Current query formatting expects qwen3-embedding:0.6b")
     # 用业务工具的阶段直接读 dataset；缺少访问策略时在服务启动前失败，而不是运行到一半。
-    if stage == "s4" and settings.sources_config is None:
+    if stage in {"manual-loop", "multi-agent"} and settings.sources_config is None:
         raise ValueError(f"Stage {stage} requires sources_config pointing at the access policy")
     for key in (
         settings.model.api_key_env,
