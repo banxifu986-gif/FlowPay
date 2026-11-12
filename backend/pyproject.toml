@@ -1,7 +1,7 @@
 [project]
-name = "flowpay-teaching"
+name = "flowpay"
 version = "0.1.0"
-description = "Traceable runtime for the FlowPay RAG course"
+description = "Traceable runtime for the FlowPay RAG project"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -15,6 +15,7 @@ dependencies = [
   "pyyaml>=6,<7",
   "pydantic>=2,<3",
   "typing-extensions>=4.12,<5",
+  "langgraph>=0.4,<0.6",
 ]
 
 [project.scripts]
