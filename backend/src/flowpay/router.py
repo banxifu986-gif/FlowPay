@@ -1,16 +1,18 @@
-"""课程阶段入口；只选择阶段，不执行检索策略或 Agent Loop。"""
+"""阶段入口；只选择阶段，不执行检索策略或 Agent Loop。"""
 
 from collections.abc import Callable
 
 from flowpay.core.execution.contracts import Workflow
 from flowpay.core.llm.chat import ChatModel
-from flowpay.workflows.s4 import S4Workflow
+from flowpay.workflows.manual_loop import ManualLoopWorkflow
+from flowpay.workflows.multi_agent import MultiAgentWorkflow
 
 StageFactory = Callable[[ChatModel, Callable[[str], str]], Workflow]
 
-# 主线四级按投入递增，每一级新增一层结构；不设与主线并列的变体入口。
+# 阶段按名字指代编排方式；不设并列的变体入口。
 STAGES: dict[str, StageFactory] = {
-    "s4": S4Workflow,
+    "manual-loop": ManualLoopWorkflow,
+    "multi-agent": MultiAgentWorkflow,
 }
 
 

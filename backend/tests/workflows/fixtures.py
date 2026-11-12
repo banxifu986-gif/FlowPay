@@ -66,6 +66,31 @@ def search_call(identifier: str, query: str, limit: int = 10) -> JsonObject:
     }
 
 
+def intent_call(identifier: str, intent: str) -> JsonObject:
+    """创建一次 set_intent 调用，驱动意图路由的 LLM 分类走到指定分支。"""
+    import json
+
+    return {
+        "id": identifier,
+        "type": "function",
+        "function": {
+            "name": "set_intent",
+            "arguments": json.dumps({"intent": intent, "reason": "受控测试：按预定意图 " + intent}),
+        },
+    }
+
+
+def tasks_call(identifier: str, tasks: list[JsonObject]) -> JsonObject:
+    """创建一次 set_tasks 调用，驱动协调者拆解出指定的调查任务。"""
+    import json
+
+    return {
+        "id": identifier,
+        "type": "function",
+        "function": {"name": "set_tasks", "arguments": json.dumps({"tasks": tasks})},
+    }
+
+
 def hit() -> Passage:
     """返回可被前端回查的片段，非 business_rule 类型也允许被检索。"""
     return Passage(
@@ -150,7 +175,7 @@ class Model:
     capabilities: dict[str, bool] = {"tools": True, "streaming": True}
 
     def __init__(self) -> None:
-        """测试显式安排每次调用结果，不用固定业务结论代替真实课程实现。"""
+        """测试显式安排每次调用结果，不用固定业务结论代替真实运行实现。"""
         self.responses: list[ChatCompletion | Exception] = []
         self.requests: list[JsonObject] = []
 
