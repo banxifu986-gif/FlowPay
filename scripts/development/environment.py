@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-
 import hashlib
 import json
 import os
@@ -17,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 # 会话与轨迹存在本地 SQLite，只有知识库需要 PostgreSQL。它只发布在 127.0.0.1，
-# 里面是公开的教学数据，所以口令固定在 compose.yaml 与 Makefile 里，.env 不存凭据。
+# 里面是公开的示例数据，所以口令固定在 compose.yaml 与 Makefile 里，.env 不存凭据。
 
 
 class Arguments(argparse.Namespace):
@@ -126,9 +125,7 @@ def check_tools(env: dict[str, str], knowledge: bool, external: bool = False) ->
     """检查前置工具和 Docker 服务；不安装软件、不启动系统服务。"""
     good = True
     tools = (
-        ["uv", "node", "npm"]
-        + ([] if external else ["docker"])
-        + (["ollama"] if knowledge else [])
+        ["uv", "node", "npm"] + ([] if external else ["docker"]) + (["ollama"] if knowledge else [])
     )
     for tool in tools:
         if not shutil.which(tool, path=env.get("PATH")):
@@ -204,9 +201,7 @@ def perform(operation: str) -> None:
         if operation == "setup":
             env = prepare_env(ROOT / ".env", dict(os.environ))
             print("✓ 本地配置已准备，原有配置保留")
-            execute(
-                ["uv", "sync", "--project", "backend", "--frozen"], env, "同步后端依赖"
-            )
+            execute(["uv", "sync", "--project", "backend", "--frozen"], env, "同步后端依赖")
             marker = ROOT / "var/setup/dependencies.json"
             if not dependencies_ready():
                 marker.unlink(missing_ok=True)
@@ -282,5 +277,3 @@ def main(operation: str) -> None:
     except PreparationError as error:
         print(f"✗ {error}", file=sys.stderr)
         raise SystemExit(1) from None
-
-

@@ -1,13 +1,15 @@
 """只验证运行契约的确定性工作流，不模拟业务调查。
 
 冒烟脚本靠它检查 HTTP 与 SSE 这一层：提交幂等、waiting_user 状态、断线后按 seq 续传、
-事件序号连续、工具调用带 parent_call_id、取消后继续。这些行为在课程阶段里也有，
+事件序号连续、工具调用带 parent_call_id、取消后继续。这些行为在正式阶段里也有，
 但要用真实模型触发就不可复现，因此这里用固定剧本走一遍同样的协议路径。
 
 `/slow`、`/tool-error`、`/model-error` 是给验收用的触发器，让对应分支可复现地发生。
 """
 
 from __future__ import annotations
+
+from openai.types.chat import ChatCompletion
 
 from flowpay.core.config import Settings
 from flowpay.core.execution.contracts import TurnInput, TurnResult
@@ -17,8 +19,6 @@ from flowpay.core.execution.types import TurnResultStatus
 from flowpay.core.json import JsonObject, require_object
 from flowpay.core.knowledge.contracts import Passage, PassageSource
 from flowpay.core.tools import Tool
-from openai.types.chat import ChatCompletion
-
 from scripts.runtime_demo.scripted import ScriptedAdapter
 
 SYSTEM = (
@@ -112,9 +112,7 @@ class DemoWorkflow:
                 delay_ms=delay,
                 fail="/model-error" in turn.user_message and not turn.resumed,
             )
-            return await runtime.chat(adapter).call(
-                [{"role": "system", "content": SYSTEM}]
-            )
+            return await runtime.chat(adapter).call([{"role": "system", "content": SYSTEM}])
 
         async def probe_with(name: str) -> None:
             """走一遍"模型请求工具、逐个执行"的真实协议形状，工具事件因此带父调用。"""
@@ -139,11 +137,7 @@ class DemoWorkflow:
         await probe_with("probe_rules")
         if not asked:
             state["asked"] = True
-            return await say(
-                "需要补充一项信息才能继续，请回复任意内容以推进剧本。", "waiting_user"
-            )
+            return await say("需要补充一项信息才能继续，请回复任意内容以推进剧本。", "waiting_user")
         await probe_with("probe_record")
         state["resolved"] = True
-        return await say(
-            "剧本已走完：追问、补充、工具调用与作答都已记录。", "completed"
-        )
+        return await say("剧本已走完：追问、补充、工具调用与作答都已记录。", "completed")

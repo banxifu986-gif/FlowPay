@@ -18,9 +18,7 @@ path = dataset / "generated/canonical/flowpay.sqlite"
 with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
     row = cast(
         tuple[str, str, str],
-        db.execute(
-            "SELECT account_id,environment,payment_id FROM payments LIMIT 1"
-        ).fetchone(),
+        db.execute("SELECT account_id,environment,payment_id FROM payments LIMIT 1").fetchone(),
     )
 account_id, environment, payment_id = row
 result = sources.sql(
@@ -32,9 +30,7 @@ assert len(result["rows"]) == 1
 for name in sources.policy.get("logs", {}):
     result = sources.logs(name, limit=2)
     assert result["rows"]
-    assert all(
-        "scenario_id" not in require_object(item["record"]) for item in result["rows"]
-    )
+    assert all("scenario_id" not in require_object(item["record"]) for item in result["rows"])
 try:
     sources.logs("audit/event_journal.jsonl")
 except ValueError:

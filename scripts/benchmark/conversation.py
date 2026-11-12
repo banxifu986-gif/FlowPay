@@ -14,7 +14,7 @@ from typing import Literal
 from flowpay.core.event_log.types import Event
 from flowpay.core.json import parse_json, require_list, require_object, require_text
 
-# s4 的 ask_user 显式记录缺哪几项，比读正文准；这里把字段名翻译成 benchmark 的类别。
+# manual-loop 的 ask_user 显式记录缺哪几项，比读正文准；这里把字段名翻译成 benchmark 的类别。
 FIELD_CATEGORY: dict[str, str] = {
     "account_id": "account_context",
     "environment": "account_context",
@@ -71,9 +71,7 @@ def asked_fields(events: Sequence[Event], run_id: str | None) -> list[str]:
         if payload.get("name") != "ask_user":
             continue
         arguments = require_object(parse_json(require_text(payload["arguments"])))
-        fields.extend(
-            require_text(item) for item in require_list(arguments.get("missing") or [])
-        )
+        fields.extend(require_text(item) for item in require_list(arguments.get("missing") or []))
     return fields
 
 
@@ -97,15 +95,11 @@ def detect(
     """
     if status == "waiting_user":
         fields = asked_fields(events, run_id)
-        mapped = sorted(
-            {FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY}
-        )
+        mapped = sorted({FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY})
         return "waiting_user", mapped or sorted(keyword_categories)
     fields = asked_fields(events, run_id)
     if fields:
-        mapped = sorted(
-            {FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY}
-        )
+        mapped = sorted({FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY})
         return "ask_user_tool", mapped
     if keyword_categories and looks_like_question(answer):
         return "text", sorted(keyword_categories)

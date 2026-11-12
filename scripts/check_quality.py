@@ -1,4 +1,4 @@
-"""统一检查教学基座；真实供应商验收单独执行，不隐式产生 API 用量。"""
+"""统一检查后端基座；真实供应商验收单独执行，不隐式产生 API 用量。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ PYTHON = ROOT / "backend/.venv/bin/python"
 BIN = PYTHON.parent
 SCOPES = ["backend/src", "backend/tests", "backend/migrations", "scripts"]
 SKIPPED_WITHOUT_DATASET = (
-    "WARNING: 未配置数据集，s3/s4 与 benchmark 相关用例已跳过；"
+    "WARNING: 未配置数据集，manual-loop 与 benchmark 相关用例已跳过；"
     "设置 FLOWPAY_DATASET_ROOT 后重跑才算完整门禁。"
 )
 

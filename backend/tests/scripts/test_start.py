@@ -163,9 +163,7 @@ def prepare_start(
     write_config(tmp_path, revision)
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "FLOWPAY_DATASET_ROOT='dataset.zip'\n"
-        "FLOWPAY_MODEL_API_KEY='example'\n"
-        "OLLAMA_API_KEY='ollama'\n"
+        "FLOWPAY_DATASET_ROOT='dataset.zip'\nFLOWPAY_MODEL_API_KEY='example'\nOLLAMA_API_KEY='ollama'\n"
     )
     calls: list[tuple[str, ...]] = []
     dataset_paths: list[str] = []
@@ -180,6 +178,7 @@ def prepare_start(
         dataset_paths.append(env[start.DATASET_KEY])
 
     def capture(*args: str, env: dict[str, str] | None = None) -> str:
+        _ = env  # 签名须与 start.capture 对齐；本替身不读取环境。
         return MODEL_LIST if args[-1] == "list" else ""
 
     monkeypatch.setattr(start, "knowledge_ready", ready)

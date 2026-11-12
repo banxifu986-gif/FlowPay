@@ -1,4 +1,4 @@
-"""s0 业务知识准备：plan 检查输入，build 幂等构建，verify 检查真实检索与引用。"""
+"""业务知识准备：plan 检查输入，build 幂等构建，verify 检查真实检索与引用。"""
 
 import argparse
 import asyncio
@@ -11,7 +11,6 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpay.core.config import load_settings
-
 from scripts.ingestion.corpus import CorpusSettings
 from scripts.ingestion.runner import run_preparation
 
@@ -29,12 +28,8 @@ class Arguments(argparse.Namespace):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["plan", "build", "verify"])
-    parser.add_argument(
-        "--config", type=Path, default=ROOT / "backend/configs/local.toml"
-    )
-    parser.add_argument(
-        "--corpus", type=Path, default=ROOT / "backend/configs/knowledge.toml"
-    )
+    parser.add_argument("--config", type=Path, default=ROOT / "backend/configs/local.toml")
+    parser.add_argument("--corpus", type=Path, default=ROOT / "backend/configs/knowledge.toml")
     args = parser.parse_args(namespace=Arguments())
     result = asyncio.run(
         run_preparation(

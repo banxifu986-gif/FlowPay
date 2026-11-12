@@ -10,6 +10,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
+from typing_extensions import TypedDict
+
 from flowpay.core.config import Settings
 from flowpay.core.event_log.runtime import open_store
 from flowpay.core.event_log.store import new_id
@@ -17,7 +19,6 @@ from flowpay.core.execution.manager import SessionManager
 from flowpay.core.execution.types import TurnRecord
 from flowpay.core.json import JsonObject, to_json_object
 from flowpay.core.knowledge import PostgresVectorStore
-from typing_extensions import TypedDict
 
 from .corpus import CorpusSettings, prepare_corpus
 from .models import KnowledgeBuildPlan
@@ -70,7 +71,7 @@ async def run_preparation(
             await manager.submit_message(
                 sid,
                 new_id("request"),
-                f"s0 knowledge {operation}: {corpus.collection_id}",
+                f"knowledge {operation}: {corpus.collection_id}",
             )
             print(
                 json.dumps(
@@ -87,9 +88,7 @@ async def run_preparation(
             session = await manager.get_session(sid)
             events = await asyncio.to_thread(store.read, sid)
             log = output_dir / f"{sid}.jsonl"
-            log.write_text(
-                "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
-            )
+            log.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
             report: KnowledgePreparationReport = {
                 "passed": session["status"] == "completed",
                 "operation": operation,
@@ -98,14 +97,10 @@ async def run_preparation(
                 "result": session["state"],
                 "last_run": session["runs"][-1],
                 "log": str(log),
-                "embedding_requests": sum(
-                    e["type"] == "embedding.request" for e in events
-                ),
+                "embedding_requests": sum(e["type"] == "embedding.request" for e in events),
             }
             path = output_dir / f"{sid}-report.json"
-            path.write_text(
-                json.dumps(to_json_object(report), ensure_ascii=False, indent=2) + "\n"
-            )
+            path.write_text(json.dumps(to_json_object(report), ensure_ascii=False, indent=2) + "\n")
             print(
                 json.dumps({"passed": report["passed"], "report": str(path)}),
                 flush=True,

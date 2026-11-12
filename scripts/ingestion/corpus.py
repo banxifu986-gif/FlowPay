@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-import tomllib
+from pydantic import BaseModel, TypeAdapter
+
 from flowpay.core.json import require_text
 from flowpay.core.knowledge import Chunk, Document
 from flowpay.core.knowledge.documents import parse_document, split_document
 from flowpay.core.knowledge.models import SplitterConfig
 from flowpay.core.llm.embedding import EmbeddingSettings
 from flowpay.core.llm.embedding.ollama import QUERY_INSTRUCTION
-from pydantic import BaseModel, TypeAdapter
 
 from .models import KnowledgeBuildConfig, KnowledgeBuildPlan
 
@@ -58,9 +59,7 @@ class CorpusSettings:
         with path.open("rb") as handle:
             values = tomllib.load(handle)
             if unknown := set(values) - set(cls.__dataclass_fields__):
-                raise ValueError(
-                    f"Unknown corpus configuration fields: {sorted(unknown)}"
-                )
+                raise ValueError(f"Unknown corpus configuration fields: {sorted(unknown)}")
             return TypeAdapter(cls).validate_python(values)
 
 
@@ -150,9 +149,7 @@ def prepare_corpus(
             raise ValueError(f"Duplicate doc_id: {document.doc_id}")
         seen_ids.add(document.doc_id)
         source_hashes[relative] = artifact.sha256
-        documents.append(
-            (document, split_document(document, body_start, config.max_chunk_chars))
-        )
+        documents.append((document, split_document(document, body_start, config.max_chunk_chars)))
     build_config = KnowledgeBuildConfig(
         release_manifest=config.release_manifest,
         release_manifest_sha256=config.release_manifest_sha256,

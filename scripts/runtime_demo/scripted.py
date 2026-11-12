@@ -5,14 +5,15 @@ import asyncio
 from collections.abc import Sequence
 from copy import deepcopy
 
-from flowpay.core.json import JsonObject, require_text
-from flowpay.core.llm.chat import ChunkSink
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionMessageParam,
     ChatCompletionToolParam,
 )
 from openai.types.chat.chat_completion import Choice
+
+from flowpay.core.json import JsonObject, require_text
+from flowpay.core.llm.chat import ChunkSink
 
 
 class ScriptedAdapter:
@@ -80,9 +81,7 @@ class ScriptedAdapter:
                     {
                         "index": 0,
                         "message": native,
-                        "finish_reason": "tool_calls"
-                        if native.get("tool_calls")
-                        else "stop",
+                        "finish_reason": "tool_calls" if native.get("tool_calls") else "stop",
                     }
                 )
             ],

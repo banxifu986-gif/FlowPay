@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import cast
 
 import psycopg
-from flowpay.core.json import require_text
 from psycopg import sql
+
+from flowpay.core.json import require_text
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,16 +45,12 @@ def setup() -> None:
             raise RuntimeError("Database identity was not returned")
         database = require_text(cast(object, row[0]))
         db.execute(
-            sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(
-                sql.Identifier(database)
-            )
+            sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(sql.Identifier(database))
         )
         # 口令固定：库只发布在本机回环，权限隔离靠下面的 GRANT，不靠口令强度。
         password = os.environ.get("FLOWPAY_DB_PASSWORD", "flowpay_local")
         for role in ("flowpay_knowledge_reader", "flowpay_knowledge_builder"):
-            if not db.execute(
-                "SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)
-            ).fetchone():
+            if not db.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)).fetchone():
                 db.execute(
                     sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
                         sql.Identifier(role), sql.Literal(password)
@@ -64,22 +61,14 @@ def setup() -> None:
                     sql.Identifier(database), sql.Identifier(role)
                 )
             )
-            db.execute(
-                sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(
-                    sql.Identifier(role)
-                )
-            )
+            db.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
             db.execute(
                 sql.SQL("GRANT SELECT ON collections,documents,chunks TO {}").format(
                     sql.Identifier(role)
                 )
             )
-        db.execute(
-            "GRANT INSERT ON collections,documents,chunks TO flowpay_knowledge_builder"
-        )
-        db.execute(
-            "GRANT UPDATE(status,ready_at) ON collections TO flowpay_knowledge_builder"
-        )
+        db.execute("GRANT INSERT ON collections,documents,chunks TO flowpay_knowledge_builder")
+        db.execute("GRANT UPDATE(status,ready_at) ON collections TO flowpay_knowledge_builder")
         db.execute("GRANT UPDATE(embedding) ON chunks TO flowpay_knowledge_builder")
     print("Knowledge database migrated; reader and builder roles granted.")
 

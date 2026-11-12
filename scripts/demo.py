@@ -1,4 +1,4 @@
-"""启动确定性 HTTP/SSE 验收服务，不调用真实模型或课程工作流。"""
+"""启动确定性 HTTP/SSE 验收服务，不调用真实模型或业务工作流。"""
 
 import argparse
 import logging
@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import uvicorn
+
 from flowpay.core.config import ModelSettings, Settings, load_settings
 from flowpay.core.http import create_app
 

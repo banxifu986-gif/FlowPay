@@ -11,6 +11,7 @@ import httpx
 import psycopg
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+
 from flowpay.core.config import Settings, load_settings
 from flowpay.core.json import (
     parse_json,
@@ -20,7 +21,6 @@ from flowpay.core.json import (
 )
 from flowpay.core.knowledge import PostgresVectorStore
 from flowpay.core.llm.embedding.ollama import ollama_identity
-
 from scripts.development.environment import ROOT, PreparationError, execute
 from scripts.ingestion.corpus import CorpusSettings, prepare_corpus
 from scripts.ingestion.runner import run_preparation
@@ -28,9 +28,7 @@ from scripts.ingestion.runner import run_preparation
 
 def check_databases() -> None:
     """只读验证迁移版本、运行连接和所需权限；不写入测试会话。"""
-    head = ScriptDirectory.from_config(
-        Config(str(ROOT / "backend/alembic.ini"))
-    ).get_current_head()
+    head = ScriptDirectory.from_config(Config(str(ROOT / "backend/alembic.ini"))).get_current_head()
     targets = {
         "FLOWPAY_KNOWLEDGE_ADMIN_DSN": ("collections", "documents", "chunks"),
         "FLOWPAY_KNOWLEDGE_DSN": ("collections", "documents", "chunks"),
@@ -47,21 +45,15 @@ def check_databases() -> None:
                 options="-c default_transaction_read_only=on -c statement_timeout=5000",
             ) as db:
                 if "ADMIN" in variable:
-                    row = db.execute(
-                        "SELECT version_num FROM alembic_version"
-                    ).fetchone()
+                    row = db.execute("SELECT version_num FROM alembic_version").fetchone()
                     if row is None or row[0] != head:
-                        raise PreparationError(
-                            "数据库迁移未完成；请运行 make db-setup。"
-                        )
+                        raise PreparationError("数据库迁移未完成；请运行 make db-setup。")
                 for table in tables:
                     row = db.execute(
                         "SELECT has_table_privilege(current_user,%s,'SELECT')", (table,)
                     ).fetchone()
                     if row != (True,):
-                        raise PreparationError(
-                            f"{variable} 缺少读取权限；请运行 make db-setup。"
-                        )
+                        raise PreparationError(f"{variable} 缺少读取权限；请运行 make db-setup。")
                 if variable == "FLOWPAY_KNOWLEDGE_BUILDER_DSN":
                     for table in tables:
                         if db.execute(
@@ -103,9 +95,7 @@ async def check_embedding(settings: Settings, download: bool) -> None:
             response = await client.get(f"{origin}/api/tags")
             response.raise_for_status()
         models = require_list(require_object(parse_json(response.content))["models"])
-        installed = any(
-            require_object(model).get("name") == embedding.name for model in models
-        )
+        installed = any(require_object(model).get("name") == embedding.name for model in models)
         if not installed:
             if not download:
                 raise PreparationError(
@@ -113,9 +103,7 @@ async def check_embedding(settings: Settings, download: bool) -> None:
                     + "执行 make setup SETUP_ARGS=--download-model。"
                 )
             if endpoint.hostname not in {"localhost", "127.0.0.1", "::1"}:
-                raise PreparationError(
-                    "自动下载仅支持本机 Ollama；请在配置的远程服务上准备模型。"
-                )
+                raise PreparationError("自动下载仅支持本机 Ollama；请在配置的远程服务上准备模型。")
             execute(
                 ["ollama", "pull", embedding.name],
                 {**os.environ, "OLLAMA_HOST": origin},
@@ -137,15 +125,11 @@ async def prepare_knowledge(settings: Settings, build: bool) -> None:
     """核对来源、配置与就绪状态；匹配则跳过，未完成则复用原幂等构建流程。"""
     corpus_settings = CorpusSettings.load(ROOT / "backend/configs/knowledge.toml")
     if corpus_settings.collection_id != settings.knowledge_collection_id:
-        raise PreparationError(
-            "local.toml 与 knowledge.toml 的集合 ID 不一致；请先统一配置。"
-        )
+        raise PreparationError("local.toml 与 knowledge.toml 的集合 ID 不一致；请先统一配置。")
     if settings.embedding is None:
         raise PreparationError("未配置嵌入模型。")
     try:
-        corpus = prepare_corpus(
-            settings.dataset_path, corpus_settings, settings.embedding
-        )
+        corpus = prepare_corpus(settings.dataset_path, corpus_settings, settings.embedding)
     except (OSError, ValueError, KeyError):
         raise PreparationError(
             "知识来源文件缺失或哈希不匹配；请恢复 dataset 发布文件，"
@@ -161,8 +145,7 @@ async def prepare_knowledge(settings: Settings, build: bool) -> None:
             if (
                 collection["build_config"] != to_json_object(corpus.build_config)
                 or collection["dataset_release_id"] != corpus.release_id
-                or collection["dataset_manifest_sha256"]
-                != corpus.canonical_manifest_sha256
+                or collection["dataset_manifest_sha256"] != corpus.canonical_manifest_sha256
                 or collection["dimensions"] != settings.embedding.dimensions
             ):
                 raise PreparationError(
@@ -182,9 +165,7 @@ async def prepare_knowledge(settings: Settings, build: bool) -> None:
         flush=True,
     )
     try:
-        await run_preparation(
-            settings, corpus_settings, "build", ROOT / "var/knowledge-build"
-        )
+        await run_preparation(settings, corpus_settings, "build", ROOT / "var/knowledge-build")
     except Exception:  # noqa: BLE001 -- CLI 边界统一脱敏，避免底层异常泄漏连接凭据。
         raise PreparationError(
             "知识构建未完成；检查后端是否占用运行锁及 var/knowledge-build 报告，"

@@ -64,9 +64,7 @@ class SimulatedUser:
 
     def __init__(self, conversation: dict[str, object]) -> None:
         """绑定本题的对话剧本；每道题独立一个实例。"""
-        self.inner: User = simulator().DeterministicSimulatedUser(
-            conversation=conversation
-        )
+        self.inner: User = simulator().DeterministicSimulatedUser(conversation=conversation)
 
     def answer(self, question: str) -> tuple[str, list[str]]:
         """回答一次追问，返回回复正文与本次披露的 fact_id 列表。

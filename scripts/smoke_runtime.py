@@ -8,10 +8,11 @@ import json
 import time
 
 import httpx
+from pydantic import TypeAdapter
+
 from flowpay.core.chat.types import SessionView
 from flowpay.core.event_log.types import Event
 from flowpay.core.execution.types import TurnRecord
-from pydantic import TypeAdapter
 
 
 class Arguments(argparse.Namespace):
@@ -43,9 +44,7 @@ def main():
 
         def wait() -> SessionView:
             for _ in range(600):
-                result = TypeAdapter(SessionView).validate_json(
-                    client.get(base).content
-                )
+                result = TypeAdapter(SessionView).validate_json(client.get(base).content)
                 if result["status"] != "running":
                     return result
                 time.sleep(0.05)
@@ -70,17 +69,13 @@ def main():
         ) as response:
             for line in response.iter_lines():
                 if line.startswith("data: "):
-                    assert (
-                        TypeAdapter(Event).validate_json(line[6:])["seq"] == cursor + 1
-                    )
+                    assert TypeAdapter(Event).validate_json(line[6:])["seq"] == cursor + 1
                     break
         send("smoke-answer", "补充信息")
         final = wait()
         assert final["status"] == "completed"
         assert len(final["messages"]) == 4
-        events = TypeAdapter(list[Event]).validate_json(
-            client.get(base + "/events").content
-        )
+        events = TypeAdapter(list[Event]).validate_json(client.get(base + "/events").content)
         exported = [
             TypeAdapter(Event).validate_json(line)
             for line in client.get(base + "/export").text.splitlines()

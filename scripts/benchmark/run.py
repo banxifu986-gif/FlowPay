@@ -1,6 +1,6 @@
-"""用 dataset 的 300 题跑课程阶段，产出按能力分层的对照报表。
+"""用 dataset 的 300 题跑各阶段，产出按能力分层的对照报表。
 
-不修改课程代码：只通过 SessionManager 的公开接口提交消息，其余全部从事件日志投影。
+不修改后端代码：只通过 SessionManager 的公开接口提交消息，其余全部从事件日志投影。
 多轮题由 dataset 自带的确定性模拟用户驱动，追问判定见 conversation.py。
 """
 
@@ -18,6 +18,8 @@ from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
+from typing_extensions import TypedDict
+
 from flowpay.bootstrap import create_workflow
 from flowpay.core.config import load_settings
 from flowpay.core.event_log.runtime import open_store
@@ -31,17 +33,16 @@ from flowpay.core.json import (
     require_text,
 )
 from flowpay.core.llm.embedding.ollama import ollama_identity
-from typing_extensions import TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
 # 同时支持 python scripts/benchmark/run.py 与 python -m scripts.benchmark.run。
 if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
-from flowpay.dataset import require_dataset
-
-from scripts.benchmark import conversation, evidence
-from scripts.benchmark.simulated import SimulatedUser, keyword_hits
+# sys.path 注入后才能导入仓库模块，E402 是这一手法的必然代价。
+from flowpay.dataset import require_dataset  # noqa: E402
+from scripts.benchmark import conversation, evidence  # noqa: E402
+from scripts.benchmark.simulated import SimulatedUser, keyword_hits  # noqa: E402
 
 TYPES = (
     "simple_retrieval",
@@ -79,13 +80,13 @@ class Row(TypedDict):
 class Arguments(argparse.Namespace):
     """命令行参数。"""
 
-    stages: str = "s1,s2,s3,s4"
+    stages: str = "manual-loop"
     per_type: int = 2
     config: Path = ROOT / "backend/configs/local.toml"
 
 
 def blueprints() -> list[JsonObject]:
-    """读取 300 题；不区分 dev/test，课程不调参，没有过拟合风险。"""
+    """读取 300 题；不区分 dev/test，不调参，没有过拟合风险。"""
     source = require_dataset() / "benchmark/design/benchmark_blueprints.jsonl"
     lines = source.read_text(encoding="utf-8").splitlines()
     return [require_object(parse_json(line)) for line in lines]
@@ -162,9 +163,7 @@ async def play(
         reply, disclosed = user.answer(answer)
         if not disclosed:
             script.note("unexpected_category")
-        script.exchanges.append(
-            conversation.Exchange(signal, categories, disclosed, reply[:200])
-        )
+        script.exchanges.append(conversation.Exchange(signal, categories, disclosed, reply[:200]))
         message = reply
     return answer, events, script
 
@@ -194,9 +193,7 @@ def supported(answer: str, assertion: str) -> bool:
     return bool(grams) and sum(gram in text for gram in grams) / len(grams) >= 0.5
 
 
-def score(
-    case: JsonObject, answer: str, events: list[Event], alignment: dict[str, str]
-) -> Row:
+def score(case: JsonObject, answer: str, events: list[Event], alignment: dict[str, str]) -> Row:
     """按证据覆盖与断言支持打分；不报 strict，两边工具词汇不同。"""
     identifier = require_text(case["question_id"])
     documents, records = evidence.expected_ids(identifier)
@@ -204,17 +201,13 @@ def score(
     doc_hit, doc_total = evidence.coverage(documents, found)
     record_hit, record_total = evidence.coverage(records, found)
     truth = require_object(case["ground_truth"])
-    assertions = [
-        require_object(item) for item in require_list(truth["required_assertions"])
-    ]
+    assertions = [require_object(item) for item in require_list(truth["required_assertions"])]
     # 禁止结论的文本形如"不得认定：X"，判定时去掉前缀，只比对结论本身。
     forbidden = [
         require_text(item).split("：", 1)[-1]
         for item in require_list(truth.get("negative_assertions") or [])
     ]
-    supported_count = sum(
-        supported(answer, require_text(a["text"])) for a in assertions
-    )
+    supported_count = sum(supported(answer, require_text(a["text"])) for a in assertions)
     breaches = sum(violated(answer, text) for text in forbidden)
     return {
         "question_id": identifier,
@@ -343,9 +336,7 @@ async def main() -> None:
     parser.add_argument("--config", type=Path, default=Arguments.config)
     args = parser.parse_args(namespace=Arguments())
 
-    output = (
-        ROOT / "var/benchmark" / f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid4().hex[:6]}"
-    )
+    output = ROOT / "var/benchmark" / f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid4().hex[:6]}"
     output.mkdir(parents=True)
     alignment = evidence.chunk_alignment()
     cases = sample(blueprints(), args.per_type)
@@ -366,8 +357,8 @@ async def main() -> None:
         "- **证据全命中**：检索是否走到 benchmark 指定的那几块原文。用别的文档答对时不通过。",
         "",
         (
-            "不报 strict 路由：benchmark 按实体登记工具，课程按关系登记，两套词汇对不上，"
-            "这是 s3 实测得出的设计而非缺陷。"
+            "不报 strict 路由：benchmark 按实体登记工具，运行时按关系登记，两套词汇对不上，"
+            "这是实测得出的设计而非缺陷。"
         ),
         "",
     ]

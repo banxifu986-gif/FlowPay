@@ -17,10 +17,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
-
-import tomllib
+from typing import cast
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -70,8 +70,8 @@ def capture(*args: str, env: dict[str, str] | None = None) -> str:
 def embedding_model() -> tuple[str, str]:
     """从 local.toml 读出嵌入模型标签和钉死的 digest；配置只维护在那一处。"""
     with (ROOT / CONFIG).open("rb") as handle:
-        embedding = tomllib.load(handle)["embedding"]
-    return str(embedding["name"]), str(embedding["revision"])
+        table = cast(dict[str, object], tomllib.load(handle)["embedding"])
+    return str(table["name"]), str(table["revision"])
 
 
 def installed_digest(name: str, env: dict[str, str]) -> str | None:
@@ -102,9 +102,7 @@ def prepare_embedding(env: dict[str, str]) -> None:
     if digest is None:
         raise SystemExit(f"嵌入模型 {name} 未安装成功；请检查网络后重新执行。")
     if not revision.startswith(digest):
-        mismatch = (
-            f"嵌入模型 {name} 的 digest 是 {digest}，与 {CONFIG} 的 revision 不符。"
-        )
+        mismatch = f"嵌入模型 {name} 的 digest 是 {digest}，与 {CONFIG} 的 revision 不符。"
         # 同名标签被上游更新过。换了模型就换了向量空间，和数据包里的向量不能混用。
         raise SystemExit(f"{mismatch}数据包里的向量属于原模型，请勿用新模型继续检索。")
     say(f"嵌入模型就绪：{name}（{digest}）")
@@ -140,14 +138,8 @@ def open_zip(bundle: Path) -> zipfile.ZipFile:
 
 def unpack(bundle: Path) -> Path:
     """解开数据包到它所在的目录，返回解出来的那个目录；已解开过就直接复用。"""
-    with (
-        open_zip(bundle) if bundle.suffix.lower() == ".zip" else tarfile.open(bundle)
-    ) as archive:
-        names = (
-            archive.namelist()
-            if isinstance(archive, zipfile.ZipFile)
-            else archive.getnames()
-        )
+    with open_zip(bundle) if bundle.suffix.lower() == ".zip" else tarfile.open(bundle) as archive:
+        names = archive.namelist() if isinstance(archive, zipfile.ZipFile) else archive.getnames()
         if isinstance(archive, zipfile.ZipFile):
             # Finder 附带的资源分支和目录缓存不参与顶层目录判断，也不解压。
             names = [
@@ -155,9 +147,7 @@ def unpack(bundle: Path) -> Path:
                 for name in names
                 if name.split("/")[0] != "__MACOSX" and Path(name).name != ".DS_Store"
             ]
-        top = {
-            name.split("/")[0] for name in names if name and not name.startswith(".")
-        }
+        top = {name.split("/")[0] for name in names if name and not name.startswith(".")}
         if len(top) != 1:
             raise SystemExit(f"数据包应当只有一个顶层目录，实际有：{sorted(top)}")
         target = bundle.parent / top.pop()
@@ -199,9 +189,7 @@ def resolve_dataset(raw: str) -> Path:
     if path.is_file():
         suffixes = [suffix.lower() for suffix in path.suffixes]
         if suffixes[-1:] != [".zip"] and suffixes[-2:] != [".tar", ".gz"]:
-            raise SystemExit(
-                f"{DATASET_KEY} 要指向数据集目录、.tar.gz 或 .zip，当前是：{path}"
-            )
+            raise SystemExit(f"{DATASET_KEY} 要指向数据集目录、.tar.gz 或 .zip，当前是：{path}")
         path = unpack(path)
     missing = [part for part in LAYOUT if not (path / part).exists()]
     if missing:
