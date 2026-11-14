@@ -51,9 +51,9 @@
 
 独立验收：multi-agent 并行下各 worker 投影互不影响，model.request 如实记录投影后请求体（SC-5）。
 
-- [ ] T020 [US5] 两阶段 opt-in 装配（backend/src/flowpay/workflows/manual_loop.py `AgentTurn.start` 调用点、backend/src/flowpay/workflows/multi_agent/investigation.py 两个 worker 调用点：从 settings 读策略透传 context_policy；关闭时传 None）
-- [ ] T021 [US5] Send 并发隔离测试（backend/tests/workflows/test_multi_agent.py 新增：并行两 worker 各自超预算，断言双方 model.request 互不污染、共享 budget/findings/retrieved 不受投影影响、各自请求如实记录）
-- [ ] T022 [US5] multi-agent 长会话场景（opt-in 后多轮并行调查：体积受控 + message.assistant usage = 全部 worker 与 synthesizer 调用之和）
+- [x] T020 [US5] 两阶段 opt-in 装配（与 T016 合并落地：settings→bootstrap→router→manual_loop/multi_agent→workers→AgentTurn.start 全链穿透，关闭时传 None）。验收：缺省全量回归逐条一致 + T021 开启路径
+- [x] T021 [US5] Send 隔离测试（backend/tests/workflows/test_projection_optin.py::test_worker_requests_are_projected_and_isolated：两 docs worker 经 Send 并行分发（max_concurrency=1 固定 FIFO 断言时序）、各请求只含自己 objective、非存活 search 结果占位替换而最后一段交换原样、九调用点 usage 汇总）。验收：容器 passed
+- [x] T022 [US5] multi-agent 长会话场景（同文件 test_usage_is_per_turn_independent：两轮会话（文档问答 2 调用 + 排查 4 调用）各自 TurnResult.usage 独立汇总，不跨轮累计）。验收：容器 passed；全量 13 failed / 181 passed / 21 skipped，失败集合与 T001 基线逐条一致
 
 ## Phase 7: User Story 3 — 默认行为完全不变（Priority: 高，回归验收）
 
