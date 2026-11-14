@@ -156,6 +156,37 @@ async def test_usage_covers_all_call_sites_and_rejected_calls(tmp_path: Path) ->
         resources.close()
 
 
+async def test_chunked_stream_usage_flows_to_frontend(tmp_path: Path) -> None:
+    """分片流式（FR-12）：正文与工具参数分片发射时用量仍完整聚合（审核回流）。
+
+    Model 开启分片后走 ChatStreamAccumulator 重组路径——compatible 端点生产上
+    正是流式，这条用例钉住"流式聚合不丢 usage"的组合行为。
+    """
+    model = Model(chunked_content=2, chunked_tool_args=True)
+    search = Search()
+    responses: list[ChatCompletion | Exception] = [
+        completion(calls=[intent_call("i1", "docs")], usage=USAGE_A),
+        completion("按文档回答。", usage=USAGE_B),
+    ]
+    model.responses = responses
+    manager, resources = build_manager(tmp_path, model, search)
+    try:
+        view = await submit_and_view(manager, "Webhook 重试策略是什么？")
+        usage = view["messages"][-1]["usage"]
+        assert usage == {
+            "model_calls": 2,
+            "input_tokens": 30,
+            "output_tokens": 5,
+            "total_tokens": 35,
+        }
+        # 分片发射确实发生：作答调用的正文增量多于一条。
+        deltas = [e for e in manager.store.read(view["id"]) if e["type"] == "model.delta"]
+        assert len(deltas) >= 2
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
 def test_legacy_assistant_event_without_usage_replays() -> None:
     """旧事件没有 usage 键：投影记 None；带 usage 键的事件照常读出。"""
     legacy = build_session_view(

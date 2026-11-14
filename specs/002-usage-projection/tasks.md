@@ -59,7 +59,7 @@
 
 独立验收：缺省配置下全量既有用例原样通过、请求内容与现行为一致（SC-1）。依赖 US1/US2/US4/US5 全部落地。
 
-- [x] T023 [US3] 缺省配置全量回归（容器口径：每个 Phase 收尾均跑全量，失败集合与 T001 基线 13 条逐条一致——2 条 benchmark + 11 条 manual-loop agent loop；既有测试文件仅 fixtures.py 增加能力，**零断言修改**（git diff main 证实：tests 下既有文件无改动，全部为新增文件））。最终计数 13 failed / 183 passed / 21 skipped
+- [x] T023 [US3] 缺省配置全量回归（容器口径：每个 Phase 收尾均跑全量，失败集合与 T001 基线 13 条逐条一致——2 条 benchmark + 11 条 manual-loop agent loop；既有测试文件仅 fixtures.py 增加能力、test_answer_contract.py 补 3 个 usage 键（ChatMessage 契约变化所迫，非断言语义修改），其余全部为新增文件）。最终计数 13 failed / 183 passed / 21 skipped
 - [x] T024 [US3] 现行为抽断（backend/tests/workflows/test_think_projection.py 两条：关闭时 Model.requests 与原生消息逐条一致、大工具结果全量发送；开启同一场景占位替换、最后一段 assistant 原样；usage 键不依赖投影开关已由 T012 覆盖）。验收：容器 2 passed
 
 ## Phase 8: Polish（质量门禁与收尾）
@@ -68,6 +68,14 @@
 - [x] T026 容器全量回归终验：13 failed / 183 passed / 21 skipped，失败集合与 T001 基线 13 条逐条一致，无扩大；新增用例 23 条全绿
 - [x] T027 手工冒烟：跳过（可选任务；本环境无真实模型端点与数据集——自动化用例已覆盖占位/用量/隔离行为，真机冒烟随部署进行）
 - [x] T028 收尾：tasks.md 复选框回填、计划文档与记忆状态更新
+
+## Post-Review Fixes（2026-11-14 子 Agent 审核后回流）
+
+审核结论：无 Critical，2 Important + 6 Minor，"With fixes"。审核人以临时 worktree 实测复核基线说法（main 与分支失败清单逐条相同），已核实属实。
+
+- [x] R01 [Important] FR-12 补齐：新增 `test_chunked_stream_usage_flows_to_frontend`——Model 开启分片（chunked_content=2 + chunked_tool_args=True）走 ChatStreamAccumulator 重组路径跑一轮文档问答，断言用量逐位求和与 model.delta 分片发射确实发生；分片 fixtures 不再是死代码，流式→usage 组合路径获得集成覆盖
+- [x] R02 [Important] SC-4 multi-agent 跨轮口径（方案 (a)）：graph.py 新增 `fold_finding_record_ids(shared)` 于 run() 的 discard_stale 之后调用——存活 findings 的 digest/target 编号并入 shared.seen（编号来自真实工具返回，防线语义不变）；消除"上轮查到的编号本轮引用被 synthesize 误拦一次"的 R-5 同源缺口；配套单测 test_findings_digest_ids_enter_shared_seen
+- [x] R03 [Minor] 工件口径修正：contracts §3/§8 改为子模块直连导入风格表述；data-model §4 target 示例改为工具函数名口径 + §6 补 run.started 快照两键说明；T023 措辞改准（answer_contract 3 行 usage 键补齐）；quickstart 基线数字更新（起点 13/160/21、终态 13/183/21）；research R-2 补实施口径注；contracts §4 增第 6 条毛边记录（小预算反胖、病态输入孤儿 tool）
 
 ## 依赖与执行顺序
 

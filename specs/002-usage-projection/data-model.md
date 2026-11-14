@@ -44,8 +44,10 @@ JSON 形状（`message.assistant` payload 的 `usage` 键）：
 保留原 tool 消息的 role 与 tool_call_id（配对不破），content 替换为：
 
 ```json
-{"placeholder": true, "target": "sql:source=pay_db scope=acct_bg_001", "rows": 50, "record_ids": ["pay_bg_001_0003"], "original_chars": 12000}
+{"placeholder": true, "target": "query_sql", "rows": 50, "record_ids": ["pay_bg_001_0003"], "original_chars": 12000}
 ```
+
+- `target` 是前驱 assistant 的工具函数名（回查自其 tool_calls；plan.md/T013 口径）。
 
 - `record_ids` 来自被压缩原文的 `record_ids()` 扫描——跨轮引用可核查，disputed 不误拦（不变量 3）。
 - 占位替换不改变消息条数与配对关系；整组删除按"assistant + 尾随全部 tool 结果"为单位，两种动作都不拆配对。
@@ -63,6 +65,7 @@ JSON 形状（`message.assistant` payload 的 `usage` 键）：
 ```
 
 - `usage` 键可缺失（既有事件、零调用轮）；session_view 按缺键宽容读取，旧事件流重放不受影响。
+- `run.started` 的快照 payload 因 Settings 新增两个投影预算键各多两键（asdict 全量导出）——向后兼容的加法。
 - `run.finished` / `run.failed` / `run.canceled` / `run.interrupted` 的 payload 一律不动。
 
 ## 7. seen 集合重建规则（修复后）

@@ -60,3 +60,16 @@ def test_restored_seen_covers_user_and_tool_history() -> None:
 def test_assistant_history_text_does_not_enter_seen() -> None:
     """assistant 历史回答里的编号不计入——那是模型自己说的，不是工具返回的。"""
     assert "pay_bg_001_9999" not in restored_seen()
+
+
+def test_findings_digest_ids_enter_shared_seen() -> None:
+    """multi-agent 跨轮口径（审核回流）：上轮结论摘要里的编号并入 shared.seen。"""
+    from flowpay.workflows.multi_agent.graph import fold_finding_record_ids
+    from flowpay.workflows.multi_agent.state import Finding, SharedTurn
+
+    shared = SharedTurn()
+    shared.findings.append(
+        Finding("query_sql", "source=pay_db acct_bg_001", 2, "2 行；首行 id=pay_bg_001_0003")
+    )
+    fold_finding_record_ids(shared)
+    assert "pay_bg_001_0003" in shared.seen

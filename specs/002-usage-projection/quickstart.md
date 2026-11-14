@@ -20,7 +20,7 @@ MSYS_NO_PATHCONV=1 docker run --rm --env-file .env -v "$(pwd)/backend:/app/backe
 make quality
 ```
 
-预期：新增用例全绿；**既有失败集合不得扩大**（基线 13 failed / 144 passed / 17 skipped，均为数据源策略未配置的既有问题）。
+预期：新增用例全绿；**既有失败集合不得扩大**（main 起点 13 failed / 160 passed / 21 skipped，分支终态 13 failed / 183 passed / 21 skipped，失败清单逐条一致，均为数据源策略未配置的既有问题）。
 
 | 成功标准 | 验证方式 |
 |---|---|
@@ -40,7 +40,7 @@ make quality
 
 ## 已知环境注意
 
-- **基线口径**：容器 `13 failed / 144 passed / 17 skipped`（--env-file .env）；验收时失败集合不得扩大
+- **基线口径**：容器 main 起点 `13 failed / 160 passed / 21 skipped`、分支终态 `13 failed / 183 passed / 21 skipped`（--env-file .env）；验收时失败集合不得扩大
 - **ruff EXE002**：Windows 挂载进容器后文件全带执行位，以宿主机 ruff 为准
 - **langgraph 对齐**：pyproject/uv.lock 的版本约束改动是分支既有状态，全量测试依赖它，但不属于本特性验收范围
 - 零依赖新增：不需要触碰 uv.lock 的依赖面（本特性自身的改动）

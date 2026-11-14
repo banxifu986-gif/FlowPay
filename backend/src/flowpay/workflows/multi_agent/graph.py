@@ -48,6 +48,18 @@ def branch(state: GraphState) -> str:
     return state["intent"]
 
 
+def fold_finding_record_ids(shared: SharedTurn) -> None:
+    """把上轮结论摘要里的记录编号并入防线集合（specs/002 R-5 的 multi-agent 侧口径）。
+
+    worker 每轮从零开始（remember=False），上轮工具返回的编号只剩 findings 摘要
+    可查；不并入的话，本轮回答引用它会被 synthesize 误拦一次（R-5 同源缺口）。
+    digest 与 target 来自真实工具返回，assistant 转述不在此列，防线语义不变。
+    """
+    for finding in shared.findings:
+        shared.seen.update(record_ids(finding.digest))
+        shared.seen.update(record_ids(finding.target))
+
+
 def dispatch(state: GraphState) -> list[Send] | str:
     """plan 之后的条件边：每个子任务经 Send 分发给对应调查员并行执行；没有任务直接进汇总。"""
     sends: list[Send] = []
@@ -166,6 +178,7 @@ class MultiAgentWorkflow:
         )
         revision = shared.case.apply(conditions_in(turn.user_message))
         discard_stale(shared, revision.changed)
+        fold_finding_record_ids(shared)
         note = briefing(shared.case, revision)
         # 编造引用核对的材料：用户本轮给出的编号，加上 case 里已有的编号字段值。
         shared.seen.update(record_ids(turn.user_message))

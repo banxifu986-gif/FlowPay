@@ -50,7 +50,7 @@ def sum_entries(entries: Iterable[UsageEntry]) -> UsageSummary:
     """聚合；model_calls = len(entries)；任一 entry 某位缺失则该位 None。"""
 ```
 
-- 公共导出经 `core.chat` 的 `__init__.py`。
+- 导入方式沿用 core/chat 既有风格（裸 `__init__` + 子模块直连，如 `from flowpay.core.chat.usage_view import ...`）。
 
 ## 4. core/chat/projection.py（新增）
 
@@ -71,7 +71,8 @@ def project_messages(
 2. **删除单元** = assistant 消息 + 其尾随全部 tool 结果整组，绝不拆散 tool_call_id 配对；
 3. **永不删除**：首条 system、任何 user 消息、最后一段 assistant 交换；
 4. **占位替换**保留 role=tool 与原 tool_call_id，content 为含 target/行数/记录编号清单的占位摘要；
-5. **预算是尽力目标**：不可删集合自身超预算时，不变量 2（永不删）优先——原样保留不可删消息、尽力压缩其余部分，此时预算未被满足不视为投影失败（T014 对应用例）。
+5. **预算是尽力目标**：不可删集合自身超预算时，不变量 2（永不删）优先——原样保留不可删消息、尽力压缩其余部分，此时预算未被满足不视为投影失败（T014 对应用例）；
+6. **已知毛边（审核记录在案）**：tool_result_budget 小于占位摘要常量开销（约 150 字符）时，恰好超限的小结果会被换成更大的占位，bootstrap 不拦此类配置；病态输入（tool 消息脱离 assistant 前驱）下整组删除可能丢 assistant 留下孤儿 tool——真实数据流经 MessageLog 产生不出该输入，全函数兜底不抛异常。
 
 - policy=None 由调用方短路（不进入投影）；`project_messages` 本身要求显式 policy。
 
@@ -111,5 +112,5 @@ class Model:
 
 - usage_view / projection 只依赖 stdlib、openai SDK 类型与 `flowpay.core.json`；不新增第三方依赖。
 - 禁止 import workflows / router / bootstrap / scripts（test_boundaries 强制）。
-- workflows 只从 core 公共导出取用（ContextPolicy / project_messages / UsageSummary）。
+- workflows 从 core 子模块直连取用（ContextPolicy / project_messages / UsageSummary），与 core/chat 既有导入风格一致。
 - JSON 序列化只经 `flowpay.core.json` helper。
