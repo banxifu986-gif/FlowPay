@@ -59,8 +59,8 @@
 
 独立验收：缺省配置下全量既有用例原样通过、请求内容与现行为一致（SC-1）。依赖 US1/US2/US4/US5 全部落地。
 
-- [ ] T023 [US3] 缺省配置全量回归（容器口径：既有用例原样通过，**零断言修改**；失败集合与 T001 基线逐条一致）
-- [ ] T024 [US3] 现行为抽断（新增测试：settings 关闭投影时，多轮用例的 Model.requests 与关闭前逐条一致；usage 键在缺省下同样写入 message.assistant——用量可见不依赖投影开关）
+- [x] T023 [US3] 缺省配置全量回归（容器口径：每个 Phase 收尾均跑全量，失败集合与 T001 基线 13 条逐条一致——2 条 benchmark + 11 条 manual-loop agent loop；既有测试文件仅 fixtures.py 增加能力，**零断言修改**（git diff main 证实：tests 下既有文件无改动，全部为新增文件））。最终计数 13 failed / 183 passed / 21 skipped
+- [x] T024 [US3] 现行为抽断（backend/tests/workflows/test_think_projection.py 两条：关闭时 Model.requests 与原生消息逐条一致、大工具结果全量发送；开启同一场景占位替换、最后一段 assistant 原样；usage 键不依赖投影开关已由 T012 覆盖）。验收：容器 2 passed
 
 ## Phase 8: Polish（质量门禁与收尾）
 
