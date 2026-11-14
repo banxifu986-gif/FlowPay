@@ -85,9 +85,9 @@ policy=None 时输出与现 f-string 拼接逐字一致（回归契约，测试�
 
 ```python
 # P1 investigation.py
-def _evidence_report(task, error_type: str, message: str) -> str      # 失败证据报告
-def _budget_report(task, findings_slice) -> str                       # 预算耗尽说明报告
-# investigate() 返回前：report_text 经 clip_text(report_char_budget)
+def error_report(worker, objective, error: Exception, budget: int) -> WorkerReport
+def budget_report(shared, worker, baseline: int, budget: int) -> WorkerReport
+# investigate() 产出前：report_text 经 clip_text(report_char_budget)（0=不截断）
 
 # P2 state.py
 def merge_old_findings(findings: list[Finding], cap: int) -> list[Finding]

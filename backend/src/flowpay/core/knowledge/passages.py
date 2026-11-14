@@ -8,6 +8,10 @@ from pydantic import TypeAdapter
 
 from flowpay.core.knowledge.contracts import Passage, for_model
 
+# 跨轮携带证据的淘汰上限（specs/003 P2，模块常量不进配置面）。
+EVIDENCE_MAX_PASSAGES = 200
+EVIDENCE_MAX_CHARS = 40000
+
 
 class PassageSet:
     """一轮 agent 累积的片段，按 Passage.id 去重。
@@ -45,6 +49,24 @@ class PassageSet:
     def all(self) -> list[Passage]:
         """按登记顺序返回全部片段，用于检查点和引用关联。"""
         return list(self.passages.values())
+
+    def prune(self, max_passages: int, max_chars: int) -> int:
+        """按登记序保最新淘汰跨轮携带的片段，返回淘汰数（specs/003 FR-12）。
+
+        两个上限取更严者：条数超过 max_passages 或正文合计超过 max_chars 时从
+        最旧开始淘汰。只在恢复检查点时调用一次——当轮新增的证据不受影响，
+        前端展示取当轮 evidence，同样不受影响。
+        """
+        kept = list(self.passages.values())
+        dropped = 0
+        while kept and (
+            len(kept) > max_passages or sum(len(passage.text) for passage in kept) > max_chars
+        ):
+            kept.pop(0)
+            dropped += 1
+        if dropped:
+            self.passages = {passage.id: passage for passage in kept}
+        return dropped
 
     def serialize(self) -> str:
         """序列化交给模型的片段；溯源信息留在本对象内，供引用展开和事件日志使用。"""

@@ -1,5 +1,6 @@
 """通用能力只检查消息协议和引用身份，阶段决定如何使用这些能力。"""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -134,3 +135,31 @@ def test_restored_native_messages_keep_extensions_and_own_their_copy() -> None:
     restored.add_user_message("next")
     assert len(original.messages) == 2 and len(restored.messages) == 3
     assert "公开的测试推理字段" in str(restored.messages)
+
+
+def test_passage_set_prune_keeps_latest_by_count() -> None:
+    """条数超限：按登记序保最新，返回淘汰数（specs/003 FR-12）。"""
+    retrieved = PassageSet()
+    retrieved.add([hit(), other_hit("doc:SECOND#c001", "SECOND")])
+    retrieved.add([other_hit("doc:THIRD#c001", "THIRD"), other_hit("doc:FOURTH#c001", "FOURTH")])
+    dropped = retrieved.prune(max_passages=2, max_chars=10**9)
+    assert dropped == 2
+    assert [p.id for p in retrieved.all()] == ["doc:THIRD#c001", "doc:FOURTH#c001"]
+
+
+def test_passage_set_prune_by_total_chars() -> None:
+    """体积超限：从最旧淘汰直到合计正文达标。"""
+    big = replace(hit(), id="doc:BIG#c001", text="长" * 900)
+    retrieved = PassageSet()
+    retrieved.add([hit(), big])
+    dropped = retrieved.prune(max_passages=100, max_chars=900)
+    assert dropped == 1  # 最旧的 hit 被淘汰，big 保留
+    assert [p.id for p in retrieved.all()] == ["doc:BIG#c001"]
+
+
+def test_passage_set_prune_noop_within_limits() -> None:
+    """上限内：零淘汰、内容不变。"""
+    retrieved = PassageSet()
+    retrieved.add([hit(), other_hit("doc:SECOND#c001", "SECOND")])
+    assert retrieved.prune(max_passages=10, max_chars=10**9) == 0
+    assert [p.id for p in retrieved.all()] == ["doc:RULE-1#c001", "doc:SECOND#c001"]

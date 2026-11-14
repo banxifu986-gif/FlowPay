@@ -58,7 +58,8 @@ cd backend && uv run pytest
 |---|---|---|
 | compaction_trigger_chars | **30000** | 三组对照：30000 正常会话零触发（语义正确）；8000 高频触发白付成本；multi-agent 失控轮 50762 字符证明 30000 量级真实可达 |
 | summary_char_budget | 4000 | 摘要正文实测均 < 4000，截断兜底未触发 |
-| 直连变量段预算 | P1 改剩余分配 | synthesize 单请求 42-47k 超整体预算 43% 的实测口径差距 |
+| 直连变量段预算 | **P1 已改剩余分配并实测生效** | 修正前 multi-agent 冒烟 max request 43664 字符；修正后同场景 13957（-68%） |
+| findings 封顶 | **P2 已实测生效** | multi-agent 六轮冒烟 findings 14 → 20（恰封顶）→ 20，改口作废对 merged 条目语义保持；evidence 60 ≤ 40000 空转 |
 
 ## 质量门禁
 

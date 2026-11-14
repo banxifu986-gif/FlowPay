@@ -16,6 +16,7 @@ from typing import Annotated, Literal, Protocol, TypedDict
 from openai.types.chat import ChatCompletion
 
 from flowpay.core.agent import Budget
+from flowpay.core.chat.projection import clip_text
 from flowpay.core.chat.usage_view import UsageEntry, from_completion
 from flowpay.core.json import JsonObject, require_int, require_list, require_object, require_text
 from flowpay.core.knowledge.passages import PassageSet
@@ -91,6 +92,31 @@ def restore_findings(state: object) -> list[Finding]:
             )
         )
     return findings
+
+
+# 跨轮发现清单的上限与合并条目的摘要预算（specs/003 P2，模块常量不进配置面）。
+FINDINGS_CAP = 20
+MERGED_DIGEST_CAP = 2000
+
+
+def merge_old_findings(findings: list[Finding], cap: int) -> list[Finding]:
+    """跨轮发现超过上限时把最旧的若干条合并为一条摘要条目（specs/003 FR-11）。
+
+    合并条目 tool=merged、target 为成员以「；」拼接——discard_stale 的子串匹配
+    语义因此保持（改口作废对合并条目仍命中）、rows 求和、digest 拼接后截断到
+    MERGED_DIGEST_CAP。不超上限时原样返回新列表，不做任何合并。
+    """
+    if len(findings) <= cap:
+        return list(findings)
+    drop = len(findings) - cap + 1
+    merged_batch = findings[:drop]
+    merged = Finding(
+        "merged",
+        "；".join(f.target for f in merged_batch),
+        sum(f.rows for f in merged_batch),
+        clip_text("；".join(f.digest for f in merged_batch), MERGED_DIGEST_CAP),
+    )
+    return [merged, *findings[drop:]]
 
 
 @dataclass

@@ -22,7 +22,7 @@ from flowpay.core.chat.usage_view import UsageEntry, from_completion, sum_entrie
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.json import JsonObject, parse_json, require_list, require_object, to_json_object
 from flowpay.core.knowledge.contracts import Passage
-from flowpay.core.knowledge.passages import PassageSet
+from flowpay.core.knowledge.passages import EVIDENCE_MAX_CHARS, EVIDENCE_MAX_PASSAGES, PassageSet
 from flowpay.core.llm.chat import ChatModel
 from flowpay.core.llm.chat.client import ChatClient
 from flowpay.core.llm.chat.messages import MessageLog, ModelOutputError, answer_text
@@ -125,6 +125,8 @@ class AgentTurn:
             messages = MessageLog.restore(turn.saved_state["messages"])
             messages.add_user_message(turn.user_message)
             retrieved = PassageSet.restore(turn.saved_state["evidence"], runtime.collection_id)
+            # 跨轮携带的证据收敛：淘汰最旧，当轮新增与前端展示不受影响（specs/003 FR-12）。
+            retrieved.prune(EVIDENCE_MAX_PASSAGES, EVIDENCE_MAX_CHARS)
         else:
             messages = MessageLog(chat_messages(turn, system))
             retrieved = PassageSet()

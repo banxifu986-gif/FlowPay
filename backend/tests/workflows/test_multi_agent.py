@@ -21,7 +21,7 @@ from flowpay.core.llm.chat import ChunkSink
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.dataset import dataset_path, snapshot_ready
 from flowpay.workflows.multi_agent import MultiAgentWorkflow
-from flowpay.workflows.multi_agent.state import WorkerReport
+from flowpay.workflows.multi_agent.state import Finding, WorkerReport
 
 from .fixtures import (
     Model,
@@ -711,3 +711,40 @@ async def test_cancellation_passes_through_investigate(tmp_path: Path) -> None:
     )
     with pytest.raises(asyncio.CancelledError):
         await investigate(agent, shared, "docs", "调查任务：查明重试策略", None)
+
+
+# ---- specs/003 P2（T018）：会话内记忆治理 ----
+
+
+def test_merge_old_findings_caps_and_preserves_stale_matching() -> None:
+    """超上限时最旧合并为一条：target 拼接保 discard_stale 子串、rows 求和、digest 截断。"""
+    from flowpay.workflows.multi_agent.state import FINDINGS_CAP, merge_old_findings
+
+    findings = [
+        Finding("sql", f"payments account=acct_{i:03d}", i, f"{i} 行；首行 id=pay_{i:04d}")
+        for i in range(25)
+    ]
+    merged = merge_old_findings(findings, cap=FINDINGS_CAP)
+    assert len(merged) == 20
+    head = merged[0]
+    assert head.tool == "merged"
+    # target 拼接保留全部被合并成员 → discard_stale 的子串匹配仍命中（FR-11）。
+    assert "acct_000" in head.target and "acct_005" in head.target
+    assert "acct_006" not in head.target  # 未合并成员不混入
+    assert head.rows == sum(range(6))  # 最旧 25-20+1=6 条合并，rows 求和
+    assert len(head.digest) <= 2000  # digest 拼接截断
+    # 其余成员原样保留、顺序不变。
+    kept_targets = [f"payments account=acct_{i:03d}" for i in range(6, 25)]
+    assert [f.target for f in merged[1:]] == kept_targets
+
+
+def test_merge_old_findings_noop_under_cap() -> None:
+    """不超上限时原样返回（新列表），不做任何合并。"""
+    from flowpay.workflows.multi_agent.state import merge_old_findings
+
+    findings = [
+        Finding("sql", "payments account=acct_bg_001", 1, "1 行"),
+        Finding("docs", "重试策略", 2, "2 个片段"),
+    ]
+    merged = merge_old_findings(findings, cap=20)
+    assert merged == findings and merged is not findings

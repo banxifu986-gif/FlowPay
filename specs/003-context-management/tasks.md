@@ -55,10 +55,10 @@
 
 独立验收：findings ≤ cap 且 discard_stale 对 merged 条目命中；evidence 淘汰不影响当轮展示（SC-7）。
 
-- [ ] T018 [US5] findings 合并测试先行（backend/tests/workflows/test_multi_agent.py 扩：超 20 条最旧合并为一条/merged.target 含全部成员 target（discard_stale 子串命中）/rows 求和/digest 拼接截断/不超 cap 不动）。验收：全红
-- [ ] T019 [US5] merge_old_findings 实现（backend/src/flowpay/workflows/multi_agent/state.py：`FINDINGS_CAP=20` 常量 + 纯函数；graph.py checkpoint 组装前调用）。验收：T018 全绿
-- [ ] T020 [US5] PassageSet.prune 测试先行 + 实现（backend/tests/core/test_knowledge.py 扩：按登记序保最新/返回淘汰数/上限内不动；core/knowledge/passages.py 实现 `prune(max_passages, max_chars)`；接线调用两处——manual-loop 的 AgentTurn.start（remember=True 恢复时）与 multi-agent 的 graph.py run()（从 saved_state.evidence 恢复 shared.retrieved 后），试点上限冒烟后定）。验收：全绿
-- [ ] T021 [US5] 容器回归（与 T001 基线一致）+ 冒烟尽力
+- [x] T018 [US5] findings 合并测试先行（backend/tests/workflows/test_multi_agent.py 两条：合并形状+子串匹配+rows 求和+digest 截断 / 不超 cap 原样返回）（backend/tests/workflows/test_multi_agent.py 扩：超 20 条最旧合并为一条/merged.target 含全部成员 target（discard_stale 子串命中）/rows 求和/digest 拼接截断/不超 cap 不动）。验收：全红
+- [x] T019 [US5] merge_old_findings 实现（state.py：FINDINGS_CAP=20/MERGED_DIGEST_CAP=2000 常量不进配置面——审核砍多余可配置化；graph.py checkpoint 组装前调用）（backend/src/flowpay/workflows/multi_agent/state.py：`FINDINGS_CAP=20` 常量 + 纯函数；graph.py checkpoint 组装前调用）。验收：T018 全绿
+- [x] T020 [US5] PassageSet.prune 测试先行 + 实现（backend/tests/core/test_answer_contract.py 三条；prune(max_passages, max_chars) 按登记序保最新；接线两处——AgentTurn.start 恢复时与 graph.py 恢复后；上限 EVIDENCE_MAX_PASSAGES=200/EVIDENCE_MAX_CHARS=40000 常量，不引入 policy 字段——与文档差异注记见下方）（backend/tests/core/test_knowledge.py 扩：按登记序保最新/返回淘汰数/上限内不动；core/knowledge/passages.py 实现 `prune(max_passages, max_chars)`；接线调用两处——manual-loop 的 AgentTurn.start（remember=True 恢复时）与 multi-agent 的 graph.py run()（从 saved_state.evidence 恢复 shared.retrieved 后），试点上限冒烟后定）。验收：全绿
+- [x] T021 [US5] 容器回归（2026-11-15：13 failed / 218 passed / 21 skipped 基线保持，净增 5 条 P2 测试）+ 冒烟尽力（multi-agent 六轮真机：findings 封顶生效、直连剩余分配 max request 43664→13957）（与 T001 基线一致）+ 冒烟尽力
 
 ## Phase 8: Polish（002 修订标注与收尾）
 

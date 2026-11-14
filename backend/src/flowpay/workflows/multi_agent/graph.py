@@ -27,7 +27,11 @@ from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
 from flowpay.core.json import JsonObject, to_json_object
-from flowpay.core.knowledge.passages import PassageSet
+from flowpay.core.knowledge.passages import (
+    EVIDENCE_MAX_CHARS,
+    EVIDENCE_MAX_PASSAGES,
+    PassageSet,
+)
 from flowpay.core.llm.chat import ChatModel
 from flowpay.workflows.manual_loop import Case, briefing, conditions_in, restore_queried
 
@@ -40,7 +44,14 @@ from .investigation import (
     synthesize_node,
 )
 from .simple import chitchat_node, doc_qa_node
-from .state import GraphState, NodeOutput, SharedTurn, restore_findings
+from .state import (
+    FINDINGS_CAP,
+    GraphState,
+    NodeOutput,
+    SharedTurn,
+    merge_old_findings,
+    restore_findings,
+)
 
 
 def branch(state: GraphState) -> str:
@@ -168,13 +179,16 @@ class MultiAgentWorkflow:
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
         """一轮 = 恢复跨轮状态 → 图状态进出 → 组装新检查点。"""
+        retrieved = PassageSet.restore(
+            turn.saved_state.get("evidence") or [], runtime.collection_id
+        )
+        # 跨轮携带的证据收敛：淘汰最旧，当轮新增与前端展示不受影响（specs/003 FR-12）。
+        retrieved.prune(EVIDENCE_MAX_PASSAGES, EVIDENCE_MAX_CHARS)
         shared = SharedTurn(
             case=Case.restore(turn.saved_state.get("case")),
             done=restore_queried(turn.saved_state.get("queried")),
             findings=restore_findings(turn.saved_state.get("findings")),
-            retrieved=PassageSet.restore(
-                turn.saved_state.get("evidence") or [], runtime.collection_id
-            ),
+            retrieved=retrieved,
         )
         revision = shared.case.apply(conditions_in(turn.user_message))
         discard_stale(shared, revision.changed)
@@ -199,6 +213,8 @@ class MultiAgentWorkflow:
             self.model, self.prepare_query, runtime, shared, note, self.context_policy
         )
         outcome = await graph.ainvoke(state, config)
+        # 跨轮发现封顶：最旧条目合并为摘要条目，改口作废对合并条目仍命中（specs/003 FR-11）。
+        shared.findings = merge_old_findings(shared.findings, FINDINGS_CAP)
         checkpoint: JsonObject = {
             **turn.saved_state,
             "case": to_json_object(shared.case),
