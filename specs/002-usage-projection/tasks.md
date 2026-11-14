@@ -45,7 +45,7 @@
 独立验收：恢复检查点后回答引用历史轮编号不触发 disputed；编造编号仍拦截（SC-4）。
 
 - [x] T018 [US4] seen 重建修复（turn.py：`given_record_ids` 扩展为 `known_record_ids`——并集增加历史轮 tool 消息 JSON 正文的编号；assistant 历史消息仍不计入；disputed() 判定规则不动；R-5）。验收：T019 两条用例
-- [x] T019 [US4] 跨轮引用回归测试（backend/tests/workflows/test_seen_restore.py 新建：恢复检查点后用户编号与历史轮工具返回编号均在 seen（修复点）、assistant 历史文本编号不计入）。验收：容器 2 passed；全量 13 failed / 179 passed / 21 skipped，失败集合与 T001 基线逐条一致
+- [x] T019 [US4] 跨轮引用回归测试（backend/tests/workflows/test_seen_restore.py 新建：恢复检查点后用户编号与历史轮工具返回编号均在 seen（修复点）、assistant 历史文本编号不计入）。验收：容器 2 passed（003 补注：本任务断言的「与原生消息逐条一致」在压缩开启的会话中指压缩后消息流，见 specs/003）；全量 13 failed / 179 passed / 21 skipped，失败集合与 T001 基线逐条一致
 
 ## Phase 6: User Story 5 — 并行调查下的投影隔离（Priority: 中）
 

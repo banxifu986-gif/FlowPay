@@ -84,7 +84,7 @@ def start(cls, turn, runtime, system, model, budget, remember=True,
           context_policy: ContextPolicy | None = None) -> AgentTurn: ...
 ```
 
-- `think()`：请求组装改为 `[*projected, *correction, *closing]`——投影只作用于检查点原生消息，纠正草稿与收尾系统消息永不投影。
+- `think()`：请求组装改为 `[*projected, *correction, *closing]`——投影只作用于检查点原生消息，纠正草稿与收尾系统消息永不投影。（003 修订：think() 入口先做检查点压缩，投影仍作用于当前消息流）
 - `think()` 内每次 `chat.call` 返回后累计 UsageEntry（含被 ModelOutputError 拒绝的调用）。
 - `accept()` / `pause()` 以 `sum_entries` 写 TurnResult.usage；`give_up()`（零调用）保持 None。
 - `__post_init__` seen 重建：question + user 消息 + **历史 tool 消息**编号（修复缺口）；disputed() 判定规则不动。

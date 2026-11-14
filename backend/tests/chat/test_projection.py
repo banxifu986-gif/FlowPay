@@ -12,7 +12,7 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
-from flowpay.core.chat.projection import ContextPolicy, project_messages
+from flowpay.core.chat.projection import ContextPolicy, clip_text, project_messages
 from flowpay.core.json import JsonObject, parse_json, require_object
 
 POLICY = ContextPolicy(char_budget=3000, tool_result_budget=400)
@@ -197,3 +197,25 @@ def test_long_session_volume_is_bounded() -> None:
         body = require_object(parse_json(str(placeholder.get("content"))))
         # 被压缩证据的记录编号全部保留——跨轮引用可核查，disputed 不误拦。
         assert body["record_ids"] == ["pay_bg_001_0003"]
+
+
+def test_clip_text_passes_short_text_through() -> None:
+    """未超限原样返回，不追加任何标记。"""
+    assert clip_text("简短内容", 100) == "简短内容"
+    assert clip_text("", 10) == ""
+    assert clip_text("恰好", 2) == "恰好"
+
+
+def test_clip_text_truncates_with_marker() -> None:
+    """超限尾部截断并追加显式标记：含被截断字符数与重查提示。"""
+    result = clip_text("长" * 600, 200)
+    assert result.startswith("长" * 200)
+    assert "已截断 400 字符" in result
+    assert "重查" in result
+
+
+def test_clip_text_zero_budget_keeps_marker_only() -> None:
+    """预算为 0：正文全截，只剩标记——预算是硬约束而非建议。"""
+    result = clip_text("内容", 0)
+    assert "内容" not in result
+    assert "已截断 2 字符" in result

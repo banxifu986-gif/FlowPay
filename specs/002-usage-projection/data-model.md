@@ -81,5 +81,5 @@ JSON 形状（`message.assistant` payload 的 `usage` 键）：
 
 ## 8. 持久化边界（不变）
 
-- `saved_state.messages` 永远是未压缩原生消息；投影结果不落任何持久化通道（FR-8）。
+- `saved_state.messages` 永远是未压缩原生消息；投影结果不落任何持久化通道（FR-8）。（003 修订 supersedes：检查点改为保存压缩后消息流，见 specs/003-context-management/spec.md「对 specs/002 的修订」节）
 - 事件日志 schema 不变：usage 已随 `model.response` 事件的 completion dump 持久化，本特性零新增事件类型。

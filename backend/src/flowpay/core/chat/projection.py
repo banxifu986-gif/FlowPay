@@ -18,13 +18,33 @@ from openai.types.chat import ChatCompletionMessageParam
 from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.json import JsonObject, parse_json
 
+# 直连节点变量段截断的显式标记：告知模型截断事实与补偿路径（specs/003 FR-8）。
+CLIP_MARKER = "……[已截断 {n} 字符，可按记录编号重查]"
+
+
+def clip_text(text: str, budget: int, marker: str = CLIP_MARKER) -> str:
+    """直连护栏的变量段裁剪：超限尾部截断并追加显式标记，未超限原样返回。
+
+    预算是硬约束：正文全截时只留标记（含被截断字符数）；调用点保留各自的
+    格式模板，本函数不感知节点文案（specs/003 research.md R-5）。
+    """
+    if len(text) <= budget:
+        return text
+    return text[: max(budget, 0)] + marker.format(n=len(text) - budget)
+
 
 @dataclass(frozen=True)
 class ContextPolicy:
-    """投影策略；None 表示现行为，由调用方短路（不进入本模块）。"""
+    """投影策略；None 表示现行为，由调用方短路（不进入本模块）。
+
+    压缩与直连护栏复用本载体：触发线 > 0 时 think() 入口先压缩检查点消息流，
+    直连节点对变量段做体积裁剪；两者缺省关闭（specs/003）。
+    """
 
     char_budget: int
     tool_result_budget: int
+    compaction_trigger_chars: int = 0
+    summary_char_budget: int = 4000
 
 
 def project_messages(

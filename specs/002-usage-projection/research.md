@@ -6,7 +6,7 @@ Date: 2026-11-14。所有决策已在计划定稿（pi-agent-snuggly-floyd.md）
 
 - **Decision**: 两层机制，按序应用。(a) 超限的旧工具结果先做**占位替换**：保留 role=tool 与原 tool_call_id，content 换为占位摘要（target、行数、记录编号清单、原始字符数）；(b) 替换后仍超预算，从最老**完整轮次**（assistant + 其全部尾随 tool 结果）**整组删除**，直到预算满足或触及不可删集合（首条 system、任何 user、最后一段 assistant 交换）。
 - **Rationale**: 占位替换保住配对（tool_call_id 原样）与编号可核查性（disputed 不误拦）；整组删除保证永不拆散 tool_call_id 配对（供应商要求 assistant.tool_calls 与 tool 消息成对）；只从最老删起 = 极保守默认（决议 3）。
-- **Alternatives considered**: tiktoken 精确计量（拒：新增依赖，违反 FR-9）；只删不占位（拒：编号证据静默消失，跨轮引用误拦）；投影结果持久化（拒：FR-8 要求检查点存原生消息、每轮确定性重算）。
+- **Alternatives considered**: tiktoken 精确计量（拒：新增依赖，违反 FR-9）；只删不占位（拒：编号证据静默消失，跨轮引用误拦）；投影结果持久化（拒：FR-8 要求检查点存原生消息、每轮确定性重算）。（003 补注：检查点存压缩后消息流的新设计见 specs/003；被拒的是「持久化投影输出」，该理由仍成立）
 
 ## R-2 阈值校准口径
 
@@ -38,7 +38,7 @@ Date: 2026-11-14。所有决策已在计划定稿（pi-agent-snuggly-floyd.md）
 
 - **Decision**: 不做任何跨 worker 投影协调：每 worker 独立 AgentTurn（remember=False），投影在各自 think() 内独立计算；测试断言各 worker 的 model.request 互不污染、共享对象（budget/findings/retrieved）不受投影影响。
 - **Rationale**: investigation.py 现状即每节点新建 AgentTurn，无共享消息状态；投影无跨轮持久化需求（FR-8）。
-- **Alternatives considered**: 共享投影缓存（拒：引入并发写，违背确定性重算）。
+- **Alternatives considered**: 共享投影缓存（拒：引入并发写，违背确定性重算）。（003 补注：压缩改写检查点消息流后，投影对给定输入仍确定，此处理由不被推翻）
 
 ## R-7 fixtures 增强
 

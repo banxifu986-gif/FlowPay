@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from openai.types.chat import ChatCompletionMessageParam
 
+from flowpay.core.chat.projection import ContextPolicy, clip_text
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.llm.chat import ChatModel
 from flowpay.core.llm.chat.messages import answer_text
@@ -51,21 +52,29 @@ def doc_qa_node(
     prepare_query: Callable[[str], str],
     runtime: AgentRuntime,
     shared: SharedTurn,
+    context_policy: ContextPolicy | None = None,
 ) -> Node:
-    """文档问答：一次检索 + 一次作答；零命中直接明示依据不足，不消耗模型调用。"""
+    """文档问答：一次检索 + 一次作答；零命中直接明示依据不足，不消耗模型调用。
+
+    PassageSet 跨轮累积是检索片段注入的无界点；策略存在时对片段序列做体积
+    裁剪，未配置时与原拼接逐字一致（specs/003 FR-8）。
+    """
 
     async def node(state: GraphState) -> NodeOutput:
         query = prepare_query(state["user_message"])
         hits = shared.retrieved.add(await runtime.search_knowledge(query, limit=5))
         if not hits:
             return {"answer": NO_EVIDENCE, "waiting": False}
+        passages = shared.retrieved.serialize()
+        if context_policy:
+            passages = clip_text(passages, context_policy.char_budget)
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": DOC_QA_PROMPT},
             {
                 "role": "user",
                 "content": (
                     f"{state['user_message']}\n\n"
-                    f"以下是知识库检索到的片段，编号用于引用：\n{shared.retrieved.serialize()}"
+                    f"以下是知识库检索到的片段，编号用于引用：\n{passages}"
                 ),
             },
         ]

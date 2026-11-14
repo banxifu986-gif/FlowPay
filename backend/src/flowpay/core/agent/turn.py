@@ -8,17 +8,24 @@ from typing import TYPE_CHECKING, cast
 
 from openai.types.chat import ChatCompletionMessageParam
 
+from flowpay.core.chat.compaction import (
+    KEEP_RECENT_ROUNDS,
+    compact_messages,
+    is_summary_message,
+    select_compaction_range,
+    summary_user_prompt,
+)
 from flowpay.core.chat.context import chat_messages
 from flowpay.core.chat.projection import ContextPolicy, project_messages
 from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.chat.usage_view import UsageEntry, from_completion, sum_entries
 from flowpay.core.execution.contracts import TurnInput, TurnResult
-from flowpay.core.json import JsonObject, to_json_object
+from flowpay.core.json import JsonObject, parse_json, require_list, require_object, to_json_object
 from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.knowledge.passages import PassageSet
 from flowpay.core.llm.chat import ChatModel
 from flowpay.core.llm.chat.client import ChatClient
-from flowpay.core.llm.chat.messages import MessageLog, ModelOutputError
+from flowpay.core.llm.chat.messages import MessageLog, ModelOutputError, answer_text
 from flowpay.core.tools import Tool, Toolbox, ToolInputError
 
 from .budget import Budget, StopReason
@@ -37,11 +44,22 @@ def known_record_ids(messages: MessageLog) -> list[str]:
     多轮排查中编号通常只在出现的那一轮之后被持续讨论，只认本轮会把历史编号判成
     模型编的（specs/002 research.md R-5）。工具返回的编号在 tool 消息的 JSON 正文
     里；assistant 的历史回答不计入——那是模型自己说的，不是工具返回的。
+    压缩后历史 tool 消息被摘要信封替换，编号改从信封的结构化 record_ids 字段
+    读取（代码确定性提取，不扫描模型正文，specs/003 research.md R-3）。
     """
     found: list[str] = []
-    for message in messages.messages:
-        role = message["role"]
+    for message in cast("list[JsonObject]", messages.messages):
+        role = message.get("role")
         content = message.get("content")
+        if role == "system" and is_summary_message(message):
+            body = require_object(parse_json(str(content)))
+            raw_ids = require_object(body).get("record_ids")
+            if raw_ids is not None:
+                try:
+                    found.extend(item for item in require_list(raw_ids) if isinstance(item, str))
+                except (TypeError, ValueError):
+                    pass  # 畸形信封的编号字段不参与防线材料，按无编号处理。
+            continue
         if role not in {"user", "tool"} or not isinstance(content, str):
             continue
         found.extend(record_ids(content))
@@ -129,14 +147,73 @@ class AgentTurn:
         """模型调用预算是否还有剩余。"""
         return self.budget.may_think()
 
+    async def _compact_if_needed(self) -> None:
+        """检查点消息流的 LLM 摘要式压缩（specs/003）：触发才压、失败跳过、绝不阻断。
+
+        只对 remember=True 且配置了触发线的阶段生效；压缩在写路径改写检查点消息流，
+        投影仍在读路径按请求确定性兜底。摘要调用不占模型调用预算，但 usage 照常入账
+        （002 先例：费用已发生的调用都计）；取消随 asyncio.CancelledError 穿透。
+        """
+        policy = self.context_policy
+        if policy is None or not self.remember or policy.compaction_trigger_chars <= 0:
+            return
+        raw = cast("list[JsonObject]", self.messages.messages)
+        groups = select_compaction_range(raw, policy.compaction_trigger_chars, KEEP_RECENT_ROUNDS)
+        if groups is None:
+            return
+        dropped = [raw[index] for group in groups for index in group]
+        previous: str | None = None
+        for message in raw:
+            if is_summary_message(message):
+                value = require_object(parse_json(str(message.get("content")))).get("text")
+                if isinstance(value, str):
+                    previous = value
+                break
+        prompt = summary_user_prompt(dropped, previous, policy.summary_char_budget)
+        call_id: str | None = None
+        try:
+            completion, call_id = await self.chat.call(
+                [{"role": "user", "content": prompt}], output="internal"
+            )
+        except Exception as error:  # CancelledError 继承 BaseException，自然穿透。
+            await self.runtime.tracer.emit(
+                "context.compaction_failed",
+                {"reason": type(error).__name__, "message": str(error)},
+                call_id,
+            )
+            return
+        self.usage_entries.append(from_completion(completion))
+        try:
+            text = answer_text(completion)
+        except ModelOutputError as error:
+            await self.runtime.tracer.emit(
+                "context.compaction_failed", {"reason": "output", "message": str(error)}, call_id
+            )
+            return
+        compacted, _, rounds = compact_messages(
+            raw, groups, text, policy.summary_char_budget
+        )
+        before = len(json.dumps(raw, ensure_ascii=False))
+        self.messages.messages = compacted
+        await self.runtime.tracer.emit(
+            "context.compacted",
+            {
+                "before_chars": before,
+                "after_chars": len(json.dumps(compacted, ensure_ascii=False)),
+                "rounds": rounds,
+            },
+            call_id,
+        )
+
     async def think(self) -> Reply:
         """请求模型，返回它选择的动作或给出的回答。
 
         输出不符合协议时（截断的工具调用、空正文、被拒绝）在剩余预算内把待纠正正文
         和纠正要求一起回传重试，纠正草稿不写入检查点。预算耗尽前的最后一次请求不再
         提供工具并要求直接作答；结果通过 Reply.forced 区分"模型认为够了"和"被要求收尾"。
-        网络、数据库异常与取消继续上抛。
+        网络、数据库异常与取消继续上抛。进入循环前先做一次检查点压缩（specs/003）。
         """
+        await self._compact_if_needed()
         correction: list[ChatCompletionMessageParam] = []
         while self.budget.may_think():
             forced = self.budget.must_answer()

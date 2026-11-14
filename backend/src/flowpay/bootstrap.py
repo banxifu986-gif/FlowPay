@@ -29,11 +29,14 @@ def create_workflow(settings: Settings) -> Workflow:
     ):
         if not os.environ.get(key):
             raise ValueError(f"Missing environment variable: {key}")
-    # 两项预算都 > 0 才启用请求前投影；缺省 0 = 关闭 = 现行为。
+    # 两项预算都 > 0 才启用请求前投影；缺省 0 = 关闭 = 现行为。压缩与直连护栏
+    # 随同一份策略一并启用（触发线 > 0 才实际生效），避免投影关闭时预算 0 的病态路径。
     context_policy = (
         ContextPolicy(
             char_budget=settings.context_char_budget,
             tool_result_budget=settings.context_tool_result_budget,
+            compaction_trigger_chars=settings.context_compaction_trigger_chars,
+            summary_char_budget=settings.context_summary_char_budget,
         )
         if settings.context_char_budget > 0 and settings.context_tool_result_budget > 0
         else None

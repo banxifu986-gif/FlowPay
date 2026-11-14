@@ -143,6 +143,8 @@ class Search:
         self.started: asyncio.Event = asyncio.Event()
         self.tracer: EventSink | None = None
         self.documents: dict[str, list[Passage]] = {"RULE-1": [hit()]}
+        # 显式指定检索结果时覆盖默认 hit()；供直连护栏用例注入超长片段（specs/003）。
+        self.search_results: list[Passage] | None = None
 
     def for_run(self, tracer: EventSink) -> "Search":
         """按轮绑定追踪，与真实检索客户端同样的装配方式；调用记录跨轮累积。"""
@@ -165,7 +167,11 @@ class Search:
             await asyncio.Event().wait()
         if self.fail:
             raise RuntimeError("search offline")
-        results = [] if "missing" in text else [hit()]
+        results = (
+            self.search_results
+            if self.search_results is not None
+            else ([] if "missing" in text else [hit()])
+        )
         await self.tracer.emit(
             "knowledge.response", {"results": [to_json_object(r) for r in results]}
         )

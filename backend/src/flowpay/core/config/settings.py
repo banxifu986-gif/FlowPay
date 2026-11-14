@@ -57,6 +57,10 @@ class Settings:
     # 请求前上下文投影：两项预算都 > 0 时启用；缺省 0 = 关闭 = 现行为。
     context_char_budget: int = 0
     context_tool_result_budget: int = 0
+    # LLM 摘要式压缩随投影策略一并启用：触发线 > 0 时在 think() 入口压缩检查点
+    # 消息流；摘要正文超出上限由代码截断（specs/003）。
+    context_compaction_trigger_chars: int = 0
+    context_summary_char_budget: int = 4000
 
     # 保留复现所需的运行设置；认证环境变量的值不属于快照内容。
     def snapshot(self) -> JsonObject:

@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from flowpay.core.agent import AgentTurn
 from flowpay.core.agent.turn import DISPUTE
-from flowpay.core.chat.projection import ContextPolicy
+from flowpay.core.chat.projection import ContextPolicy, clip_text
 from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import log_tool, sql_tool
@@ -55,6 +55,9 @@ from .state import (
     SharedTurn,
     WorkerReport,
 )
+
+# 汇总读取端对每份调查报告的体积上限（specs/003 FR-9）；P1 起迁入 policy 产出端协同。
+REPORT_CHAR_CAP = 4096
 
 SUPERVISOR_PROMPT = """你是支付平台的排查协调者。根据用户的问题拆解调查，调用 set_tasks 报告子任务。
 - kind=sql：要查业务记录（支付、事件、Webhook 投递、端点、API 请求）才能回答的部分；
@@ -230,14 +233,23 @@ async def investigate(
 
 
 def plan_node(
-    model: ChatModel, runtime: AgentRuntime, shared: SharedTurn, case_note: str | None
+    model: ChatModel,
+    runtime: AgentRuntime,
+    shared: SharedTurn,
+    case_note: str | None,
+    context_policy: ContextPolicy | None = None,
 ) -> Node:
-    """协调者：一次结构化调用拆解调查任务；解析失败按空任务处理，直接进汇总。"""
+    """协调者：一次结构化调用拆解调查任务；解析失败按空任务处理，直接进汇总。
+
+    简报随 findings 跨轮增长，是 plan 请求的无界点；策略存在时做体积裁剪，
+    未配置时与原拼接逐字一致（specs/003 FR-8）。
+    """
 
     async def node(state: GraphState) -> NodeOutput:
         content = state["user_message"]
         if briefing := turn_briefing(shared, case_note):
-            content = f"{content}\n\n{briefing}"
+            note = clip_text(briefing, context_policy.char_budget) if context_policy else briefing
+            content = f"{content}\n\n{note}"
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": SUPERVISOR_PROMPT},
             {"role": "user", "content": content},
@@ -402,18 +414,30 @@ def doc_worker_node(
 
 
 def synthesize_node(
-    model: ChatModel, runtime: AgentRuntime, shared: SharedTurn, case_note: str | None
+    model: ChatModel,
+    runtime: AgentRuntime,
+    shared: SharedTurn,
+    case_note: str | None,
+    context_policy: ContextPolicy | None = None,
 ) -> Node:
-    """汇总：合并全部调查报告作答；有未回复的追问时直接以追问结束本轮（R5）。"""
+    """汇总：合并全部调查报告作答；有未回复的追问时直接以追问结束本轮（R5）。
+
+    简报与每份调查报告是本请求的无界点：策略存在时简报按整体预算、每份报告
+    按读取端上限裁剪；未配置时与原拼接逐字一致（specs/003 FR-8/FR-9）。
+    """
 
     async def node(state: GraphState) -> NodeOutput:
         if shared.pending:
             return {"answer": shared.pending[0].question, "waiting": True}
         content = state["user_message"]
         if briefing := turn_briefing(shared, case_note):
-            content = f"{content}\n\n{briefing}"
+            note = clip_text(briefing, context_policy.char_budget) if context_policy else briefing
+            content = f"{content}\n\n{note}"
         reports = "\n\n".join(
-            f"[{report.worker} 调查员]\n{report.text}" for report in state["reports"]
+            f"[{report.worker} 调查员]\n{clip_text(report.text, REPORT_CHAR_CAP)}"
+            if context_policy
+            else f"[{report.worker} 调查员]\n{report.text}"
+            for report in state["reports"]
         )
         content = f"{content}\n\n调查报告：\n{reports or '（没有调查报告）'}"
         messages: list[ChatCompletionMessageParam] = [

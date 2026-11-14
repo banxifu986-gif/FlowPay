@@ -41,7 +41,7 @@
 （数据模型与接口细节见 [data-model.md](./data-model.md) 与 [contracts/interfaces.md](./contracts/interfaces.md)）
 
 - **用量链**：`from_completion(completion)` 提取单次 UsageEntry（缺失字段容错为 None，不按 0 补齐），`sum_entries` 聚合；AgentTurn 在 think() 每次拿到 completion 后累计（含被纠正循环拒绝的调用——费用已发生），accept/pause 写入 TurnResult.usage；multi-agent 由 SharedTurn 收集各 agent 的 entries，graph.run 汇总；manager 提交时写进 `message.assistant` payload 的 `usage` 键；session_view 的 ChatMessage 增加 usage 字段（缺键宽容）。
-- **投影链**：`ContextPolicy`（字符预算等；None = 现行为）从 settings 读入，两阶段透传给 `AgentTurn.start`；think() 发请求前组装为 `[*project_messages(messages, policy), *correction, *closing]`——投影只作用于检查点原生消息，纠正草稿与收尾系统消息永不投影。投影两层机制（research R-1）：超限旧工具结果先占位替换（role=tool、tool_call_id 原样，配对不破），仍超限则整组删除最老完整轮次（assistant + 尾随 tool 一起走，绝不拆对）；不可删集合：首条 system、任何 user、最后一段 assistant 交换。检查点永远存原生消息，投影每轮确定性重算。
+- **投影链**：`ContextPolicy`（字符预算等；None = 现行为）从 settings 读入，两阶段透传给 `AgentTurn.start`；think() 发请求前组装为 `[*project_messages(messages, policy), *correction, *closing]`——投影只作用于检查点原生消息，纠正草稿与收尾系统消息永不投影。投影两层机制（research R-1）：超限旧工具结果先占位替换（role=tool、tool_call_id 原样，配对不破），仍超限则整组删除最老完整轮次（assistant + 尾随 tool 一起走，绝不拆对）；不可删集合：首条 system、任何 user、最后一段 assistant 交换。检查点永远存原生消息，投影每轮确定性重算。（003 修订 supersedes：检查点改为保存压缩后消息流，见 specs/003-context-management/spec.md「对 specs/002 的修订」节）
 - **seen 修复**：恢复检查点时，seen 重建除 question + user 消息编号外，扫描历史 tool 消息内容把工具真实返回过的编号并入；assistant 历史消息仍不计入；disputed() 判定规则不动。
 
 ## Project Structure

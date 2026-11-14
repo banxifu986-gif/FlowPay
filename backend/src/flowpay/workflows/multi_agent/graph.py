@@ -112,14 +112,14 @@ def build_graph(
 
     graph = StateGraph(GraphState)
     graph.add_node("route", route)
-    graph.add_node("plan", plan_node(model, runtime, shared, case_note))
+    graph.add_node("plan", plan_node(model, runtime, shared, case_note, context_policy))
     graph.add_node("sql_worker", sql_worker_node(model, runtime, shared, case_note, context_policy))
     graph.add_node(
         "doc_worker",
         doc_worker_node(model, prepare_query, runtime, shared, case_note, context_policy),
     )
-    graph.add_node("synthesize", synthesize_node(model, runtime, shared, case_note))
-    graph.add_node("doc_qa", doc_qa_node(model, prepare_query, runtime, shared))
+    graph.add_node("synthesize", synthesize_node(model, runtime, shared, case_note, context_policy))
+    graph.add_node("doc_qa", doc_qa_node(model, prepare_query, runtime, shared, context_policy))
     graph.add_node("chitchat", chitchat_node(model, runtime, shared))
     graph.add_edge(START, "route")
     graph.add_conditional_edges(
