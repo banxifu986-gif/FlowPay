@@ -47,9 +47,9 @@
 
 独立验收：报告产出端有界带标记；调查者故障/预算耗尽产出说明性报告，synthesize 照常作答（SC-6）。
 
-- [ ] T015 [US4] 测试先行（backend/tests/workflows/test_multi_agent.py 扩：①报告超 report_char_budget 截断带标记；②worker 内部故障 → 错误报告含 error_type/message/任务目标，其余 worker 照常、synthesize 产出部分结论；③预算耗尽无报告 → findings 切片预算说明报告；④CancelledError 穿透不被吞）。验收：全红
-- [ ] T016 [US4] 实现（investigation.py：产出端 clip_text + except Exception 转错误报告 + 无报告 findings 切片说明报告；SQL/DOC_WORKER_PROMPT 加「结论摘要保持简短、引用编号不罗列数据」；claim 拒绝话术细化为「换更精确条件重查」；ContextPolicy 增 `report_char_budget: int = 4096` + settings 键 + T010 读取端常量迁入 policy）。验收：T015 全绿
-- [ ] T017 [US4] 容器回归（与 T001 基线一致）+ 冒烟尽力（人为故障场景真机跑通则回填 quickstart，不作为硬门禁）
+- [x] T015 [US4] 测试先行（backend/tests/workflows/test_multi_agent.py 四条：故障转错误报告/产出端截断/预算耗尽 findings 切片/取消穿透——CancelModel 桩）（backend/tests/workflows/test_multi_agent.py 扩：①报告超 report_char_budget 截断带标记；②worker 内部故障 → 错误报告含 error_type/message/任务目标，其余 worker 照常、synthesize 产出部分结论；③预算耗尽无报告 → findings 切片预算说明报告；④CancelledError 穿透不被吞）。验收：全红
+- [x] T016 [US4] 实现（investigate 重构：故障/耗尽转说明报告不让整轮失败，报告产出端 clip_text；ContextPolicy.report_char_budget+settings+bootstrap；claim 话术细化保「已经执行过」锚定子串；worker PROMPT 加简短结论要求；含 Ban 批准的直连口径修正——synthesize/plan/doc_qa 变量段改剩余分配）（investigation.py：产出端 clip_text + except Exception 转错误报告 + 无报告 findings 切片说明报告；SQL/DOC_WORKER_PROMPT 加「结论摘要保持简短、引用编号不罗列数据」；claim 拒绝话术细化为「换更精确条件重查」；ContextPolicy 增 `report_char_budget: int = 4096` + settings 键 + T010 读取端常量迁入 policy）。验收：T015 全绿
+- [x] T017 [US4] 容器回归（13 failed / 213 passed / 21 skipped 基线保持，净增 4 条 P1 测试）+ 冒烟尽力（直连剩余分配生效：max request 43664→13957）（与 T001 基线一致）+ 冒烟尽力（人为故障场景真机跑通则回填 quickstart，不作为硬门禁）
 
 ## Phase 7: User Story 5 — 会话内记忆治理（Priority: 中，P2）
 
@@ -63,7 +63,7 @@
 ## Phase 8: Polish（002 修订标注与收尾）
 
 - [x] T022 [P] 002 supersedes 标注 10 处（2026-11-14 完成：spec.md FR-8/US2/FR-3/FR-10/范围外、data-model、plan、research R-5 与被拒备选、interfaces §5、tasks T024；仅加注不改历史原文）（specs/002-usage-projection/：spec.md FR-8/US2/FR-3/FR-10/范围外、data-model.md、plan.md、research.md R-5 与被拒备选、contracts/interfaces.md §5——各处加注「003 已修订，见 specs/003-context-management/spec.md 对 002 的修订节」；tasks.md T024 仅加注不改内容；不改写历史原文）
-- [ ] T023 批次提交整理：P0（T001-T014）/ P1（T015-T017）/ P2+Polish（T018-T023）各一批，`make quality` 全绿后按操作约定提交
+- [x] T023 批次提交整理（6049524 P0 / 370b5ee P1 / 6e0dda9 P2+Polish，每批 make quality 门禁 + 容器回归通过）：P0（T001-T014）/ P1（T015-T017）/ P2+Polish（T018-T023）各一批，`make quality` 全绿后按操作约定提交
 
 ## 依赖与执行顺序
 
