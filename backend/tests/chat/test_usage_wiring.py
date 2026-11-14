@@ -6,6 +6,8 @@ multi-agent 轻路径（意图分类、文档问答、文档调查员）不需�
 
 from pathlib import Path
 
+from openai.types.chat import ChatCompletion
+
 from flowpay.core.chat.session_view import build_session_view
 from flowpay.core.chat.types import SessionView
 from flowpay.core.config import Settings
@@ -19,11 +21,11 @@ from flowpay.router import create_stage
 
 from ..workflows.fixtures import Model, Search, completion, intent_call, tasks_call
 
-USAGE_A = {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
-USAGE_B = {"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23}
-USAGE_C = {"prompt_tokens": 30, "completion_tokens": 4, "total_tokens": 34}
-USAGE_D = {"prompt_tokens": 40, "completion_tokens": 5, "total_tokens": 45}
-USAGE_E = {"prompt_tokens": 50, "completion_tokens": 6, "total_tokens": 56}
+USAGE_A: JsonObject = {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+USAGE_B: JsonObject = {"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23}
+USAGE_C: JsonObject = {"prompt_tokens": 30, "completion_tokens": 4, "total_tokens": 34}
+USAGE_D: JsonObject = {"prompt_tokens": 40, "completion_tokens": 5, "total_tokens": 45}
+USAGE_E: JsonObject = {"prompt_tokens": 50, "completion_tokens": 6, "total_tokens": 56}
 
 
 def build_manager(
@@ -69,13 +71,23 @@ def event(seq: int, kind: str, payload: JsonObject, run_id: str | None = None) -
     )
 
 
+def session_created() -> Event:
+    """会话首事件；workflow 身份与既有阶段一致。"""
+    return event(
+        1,
+        "session.created",
+        {"workflow": {"id": "flowpay-multi-agent-support", "version": "1"}},
+    )
+
+
 async def test_answer_turn_carries_usage(tmp_path: Path) -> None:
     """文档问答一轮（分类 + 作答两次直连调用）：回答消息携带逐位求和的用量。"""
     model, search = Model(), Search()
-    model.responses = [
+    responses: list[ChatCompletion | Exception] = [
         completion(calls=[intent_call("i1", "docs")], usage=USAGE_A),
         completion("按文档回答。", usage=USAGE_B),
     ]
+    model.responses = responses
     manager, resources = build_manager(tmp_path, model, search)
     try:
         view = await submit_and_view(manager, "Webhook 重试策略是什么？")
@@ -94,10 +106,11 @@ async def test_answer_turn_carries_usage(tmp_path: Path) -> None:
 async def test_usage_without_provider_usage_reads_none_fields(tmp_path: Path) -> None:
     """响应都不带 usage：各字段记 None 而不是 0，调用次数如实统计。"""
     model, search = Model(), Search()
-    model.responses = [
+    responses: list[ChatCompletion | Exception] = [
         completion(calls=[intent_call("i1", "docs")]),
         completion("按文档回答。"),
     ]
+    model.responses = responses
     manager, resources = build_manager(tmp_path, model, search)
     try:
         view = await submit_and_view(manager, "Webhook 重试策略是什么？")
@@ -116,13 +129,17 @@ async def test_usage_without_provider_usage_reads_none_fields(tmp_path: Path) ->
 async def test_usage_covers_all_call_sites_and_rejected_calls(tmp_path: Path) -> None:
     """排查一轮（route/plan/调查员被拒重答/汇总）：五处调用点全部计入。"""
     model, search = Model(), Search()
-    model.responses = [
+    responses: list[ChatCompletion | Exception] = [
         completion(calls=[intent_call("i1", "troubleshoot")], usage=USAGE_A),
-        completion(calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])], usage=USAGE_B),
+        completion(
+            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])],
+            usage=USAGE_B,
+        ),
         completion("还没说完", finish="length", usage=USAGE_C),
         completion("重试策略报告。", usage=USAGE_D),
         completion("最终回答。", usage=USAGE_E),
     ]
+    model.responses = responses
     manager, resources = build_manager(tmp_path, model, search)
     try:
         view = await submit_and_view(manager, "Webhook 重试策略是什么？帮我看看")
@@ -143,7 +160,7 @@ def test_legacy_assistant_event_without_usage_replays() -> None:
     """旧事件没有 usage 键：投影记 None；带 usage 键的事件照常读出。"""
     legacy = build_session_view(
         [
-            event(1, "session.created", {"workflow": {"id": "flowpay-multi-agent-support", "version": "1"}}),
+            session_created(),
             event(2, "message.user", {"content": "问题"}, run_id="r1"),
             event(3, "message.assistant", {"content": "旧回答", "evidence": []}, run_id="r1"),
         ]
@@ -151,7 +168,7 @@ def test_legacy_assistant_event_without_usage_replays() -> None:
     assert legacy["messages"][-1]["usage"] is None
     carried = build_session_view(
         [
-            event(1, "session.created", {"workflow": {"id": "flowpay-multi-agent-support", "version": "1"}}),
+            session_created(),
             event(2, "message.user", {"content": "问题"}, run_id="r1"),
             event(
                 3,

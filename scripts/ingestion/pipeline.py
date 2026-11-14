@@ -6,8 +6,6 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
-from pydantic import TypeAdapter
-
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
@@ -18,6 +16,7 @@ from flowpay.core.knowledge.models import MarkdownLocator
 from flowpay.core.llm.embedding import EmbeddingClient, EmbeddingSettings
 from flowpay.core.llm.embedding.ollama import ollama_identity, retrieval_input
 from flowpay.core.llm.embedding.openai_embedding import OpenAiEmbeddingModel
+from pydantic import TypeAdapter
 
 from .corpus import PreparedCorpus, checked_bytes
 from .models import (

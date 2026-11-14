@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-from openai.types.chat import ChatCompletion
-
 from flowpay.core.config import Settings
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
@@ -19,6 +17,8 @@ from flowpay.core.execution.types import TurnResultStatus
 from flowpay.core.json import JsonObject, require_object
 from flowpay.core.knowledge.contracts import Passage, PassageSource
 from flowpay.core.tools import Tool
+from openai.types.chat import ChatCompletion
+
 from scripts.runtime_demo.scripted import ScriptedAdapter
 
 SYSTEM = (

@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import cast
 
 import psycopg
-from psycopg import sql
-
 from flowpay.core.json import require_text
+from psycopg import sql
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -7,14 +7,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, TypeAdapter
-
 from flowpay.core.json import require_text
 from flowpay.core.knowledge import Chunk, Document
 from flowpay.core.knowledge.documents import parse_document, split_document
 from flowpay.core.knowledge.models import SplitterConfig
 from flowpay.core.llm.embedding import EmbeddingSettings
 from flowpay.core.llm.embedding.ollama import QUERY_INSTRUCTION
+from pydantic import BaseModel, TypeAdapter
 
 from .models import KnowledgeBuildConfig, KnowledgeBuildPlan
 

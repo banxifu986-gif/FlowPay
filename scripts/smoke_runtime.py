@@ -8,11 +8,10 @@ import json
 import time
 
 import httpx
-from pydantic import TypeAdapter
-
 from flowpay.core.chat.types import SessionView
 from flowpay.core.event_log.types import Event
 from flowpay.core.execution.types import TurnRecord
+from pydantic import TypeAdapter
 
 
 class Arguments(argparse.Namespace):

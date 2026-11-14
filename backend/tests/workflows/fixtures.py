@@ -4,8 +4,14 @@ import asyncio
 import copy
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import cast
 
-from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCompletionToolParam
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+)
 
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.json import JsonObject, to_json_object
@@ -240,14 +246,19 @@ class Model:
             }
 
         frames: list[JsonObject] = [frame({"role": "assistant"})]
-        fields = message.model_dump(mode="json", exclude_unset=True, exclude_none=True)
+        fields = cast(
+            "JsonObject",
+            message.model_dump(mode="json", exclude_unset=True, exclude_none=True),
+        )
         for field, value in fields.items():
             if field not in {"role", "content", "tool_calls"}:
                 # reasoning_content 等公开扩展字段按原样作为一次增量发射。
                 frames.append(frame({field: value}))
         for piece in fragments(message.content or "", self.chunked_content):
             frames.append(frame({"content": piece}))
-        for position, call in enumerate(message.tool_calls or []):
+        # tool_calls 的 SDK 类型是 function/custom 联合；本夹具只构造 function 调用。
+        calls = cast("list[ChatCompletionMessageFunctionToolCall]", message.tool_calls or [])
+        for position, call in enumerate(calls):
             frames.append(
                 frame(
                     {
@@ -262,7 +273,11 @@ class Model:
                     }
                 )
             )
-            pieces = fragments(call.function.arguments, 3) if self.chunked_tool_args else [call.function.arguments]
+            pieces = (
+                fragments(call.function.arguments, 3)
+                if self.chunked_tool_args
+                else [call.function.arguments]
+            )
             for piece in pieces:
                 frames.append(
                     frame({"tool_calls": [{"index": position, "function": {"arguments": piece}}]})

@@ -18,8 +18,6 @@ from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
-from typing_extensions import TypedDict
-
 from flowpay.bootstrap import create_workflow
 from flowpay.core.config import load_settings
 from flowpay.core.event_log.runtime import open_store
@@ -33,6 +31,7 @@ from flowpay.core.json import (
     require_text,
 )
 from flowpay.core.llm.embedding.ollama import ollama_identity
+from typing_extensions import TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
 # 同时支持 python scripts/benchmark/run.py 与 python -m scripts.benchmark.run。
@@ -40,9 +39,10 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
 # sys.path 注入后才能导入仓库模块，E402 是这一手法的必然代价。
-from flowpay.dataset import require_dataset  # noqa: E402
-from scripts.benchmark import conversation, evidence  # noqa: E402
-from scripts.benchmark.simulated import SimulatedUser, keyword_hits  # noqa: E402
+from flowpay.dataset import require_dataset
+
+from scripts.benchmark import conversation, evidence
+from scripts.benchmark.simulated import SimulatedUser, keyword_hits
 
 TYPES = (
     "simple_retrieval",

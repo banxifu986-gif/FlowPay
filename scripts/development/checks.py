@@ -11,7 +11,6 @@ import httpx
 import psycopg
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-
 from flowpay.core.config import Settings, load_settings
 from flowpay.core.json import (
     parse_json,
@@ -21,6 +20,7 @@ from flowpay.core.json import (
 )
 from flowpay.core.knowledge import PostgresVectorStore
 from flowpay.core.llm.embedding.ollama import ollama_identity
+
 from scripts.development.environment import ROOT, PreparationError, execute
 from scripts.ingestion.corpus import CorpusSettings, prepare_corpus
 from scripts.ingestion.runner import run_preparation

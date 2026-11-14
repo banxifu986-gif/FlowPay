@@ -16,7 +16,7 @@ from typing import cast
 from openai.types.chat import ChatCompletionMessageParam
 
 from flowpay.core.chat.record_ids import record_ids
-from flowpay.core.json import JsonObject
+from flowpay.core.json import JsonObject, parse_json
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ def project_messages(
     messages: list[ChatCompletionMessageParam], policy: ContextPolicy
 ) -> list[ChatCompletionMessageParam]:
     """返回投影后的新消息列表；输入列表不被修改，任何异常输入原样返回。"""
-    if not isinstance(messages, list) or not messages:
+    if not messages:
         return messages
     try:
         return cast(
@@ -52,10 +52,8 @@ def _project(messages: list[JsonObject], policy: ContextPolicy) -> list[JsonObje
 
 
 def _role(message: JsonObject) -> object:
-    """消息角色；畸形消息（缺 role 或非字典）按未知处理，不参与任何删除判定。"""
-    if isinstance(message, dict):
-        return message.get("role")
-    return None
+    """消息角色；缺 role 的畸形消息按未知处理，不参与任何删除判定。"""
+    return message.get("role")
 
 
 def _chars(message: object) -> int:
@@ -92,16 +90,12 @@ def _tool_names(messages: list[JsonObject]) -> dict[str, str]:
     for message in messages:
         if _role(message) != "assistant":
             continue
-        calls = message.get("tool_calls")
-        if not isinstance(calls, list):
-            continue
+        calls = cast("list[JsonObject]", message.get("tool_calls") or [])
         for call in calls:
-            if not isinstance(call, dict):
-                continue
             function = call.get("function")
             call_id = call.get("id")
             if isinstance(call_id, str) and isinstance(function, dict):
-                name = function.get("name")
+                name = cast("JsonObject", function).get("name")
                 if isinstance(name, str):
                     names[call_id] = name
     return names
@@ -121,11 +115,13 @@ def _live_tool_ids(messages: list[JsonObject]) -> set[str]:
 def _row_count(text: str) -> int | None:
     """工具结果里 rows 列表的长度；解析不出记 None，不猜。"""
     try:
-        parsed = json.loads(text)
+        parsed = parse_json(text)
     except ValueError:
         return None
-    if isinstance(parsed, dict) and isinstance(parsed.get("rows"), list):
-        return len(parsed["rows"])
+    if isinstance(parsed, dict):
+        rows = cast("JsonObject", parsed).get("rows")
+        if isinstance(rows, list):
+            return len(cast("list[object]", rows))
     return None
 
 

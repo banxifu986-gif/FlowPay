@@ -20,8 +20,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from openai.types.chat import ChatCompletionMessageParam
 
-from flowpay.core.agent.turn import record_ids
 from flowpay.core.chat.projection import ContextPolicy
+from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.chat.usage_view import sum_entries
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
@@ -103,7 +103,8 @@ def build_graph(
     graph.add_node("plan", plan_node(model, runtime, shared, case_note))
     graph.add_node("sql_worker", sql_worker_node(model, runtime, shared, case_note, context_policy))
     graph.add_node(
-        "doc_worker", doc_worker_node(model, prepare_query, runtime, shared, case_note, context_policy)
+        "doc_worker",
+        doc_worker_node(model, prepare_query, runtime, shared, case_note, context_policy),
     )
     graph.add_node("synthesize", synthesize_node(model, runtime, shared, case_note))
     graph.add_node("doc_qa", doc_qa_node(model, prepare_query, runtime, shared))
@@ -181,7 +182,9 @@ class MultiAgentWorkflow:
         config: RunnableConfig | None = (
             {"max_concurrency": self.max_concurrency} if self.max_concurrency else None
         )
-        graph = build_graph(self.model, self.prepare_query, runtime, shared, note, self.context_policy)
+        graph = build_graph(
+            self.model, self.prepare_query, runtime, shared, note, self.context_policy
+        )
         outcome = await graph.ainvoke(state, config)
         checkpoint: JsonObject = {
             **turn.saved_state,

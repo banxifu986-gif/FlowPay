@@ -64,10 +64,10 @@
 
 ## Phase 8: Polish（质量门禁与收尾）
 
-- [ ] T025 质量门禁全绿，按组件口径执行：pytest 走容器全量（Makefile 的 VENV 是 Unix 路径，Windows 宿主机不可直跑 `make test`/`make quality`）；ruff + basedpyright 宿主机或容器执行均可（宿主机 ruff 快查时 EXE002 误报忽略——Windows 挂载文件全带执行位）；前端构建 `npm --prefix frontend run build` 宿主机执行
-- [ ] T026 容器全量回归终验：失败集合与 T001 基线逐条一致无扩大；新增用例全绿
-- [ ] T027 手工冒烟（可选，per quickstart）：opt-in 长排查会话——model.request 体积受控、占位摘要保留 record_ids、前端 usage 展示、跨轮引用不误拦
-- [ ] T028 收尾：tasks.md 复选框回填、计划文档与记忆状态更新
+- [x] T025 质量门禁全绿（2026-11-14，按组件口径）：ruff 全部通过（宿主机 uvx ruff 权威口径；含机械修复 scripts 既有 I001/RUF100 债务 16 条——ruff --fix，零行为变更，001 同例授权惯例）；basedpyright **0 errors / 0 warnings**（basedpyright 1.40.0，仓库根 pyrightconfig.json + venv 链接的容器复刻口径；顺带修复我的测试文件类型问题 52 条与 answer_contract 1 条回归）；前端 prettier / vitest 50 passed / vite build 全过（含机械修复 2 个前端文件既有格式债）
+- [x] T026 容器全量回归终验：13 failed / 183 passed / 21 skipped，失败集合与 T001 基线 13 条逐条一致，无扩大；新增用例 23 条全绿
+- [x] T027 手工冒烟：跳过（可选任务；本环境无真实模型端点与数据集——自动化用例已覆盖占位/用量/隔离行为，真机冒烟随部署进行）
+- [x] T028 收尾：tasks.md 复选框回填、计划文档与记忆状态更新
 
 ## 依赖与执行顺序
 

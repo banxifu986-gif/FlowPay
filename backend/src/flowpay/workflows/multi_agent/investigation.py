@@ -15,8 +15,9 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from flowpay.core.agent import AgentTurn
-from flowpay.core.agent.turn import DISPUTE, record_ids
+from flowpay.core.agent.turn import DISPUTE
 from flowpay.core.chat.projection import ContextPolicy
+from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import log_tool, sql_tool
 from flowpay.core.execution.contracts import TurnInput

@@ -10,8 +10,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
-from typing_extensions import TypedDict
-
 from flowpay.core.config import Settings
 from flowpay.core.event_log.runtime import open_store
 from flowpay.core.event_log.store import new_id
@@ -19,6 +17,7 @@ from flowpay.core.execution.manager import SessionManager
 from flowpay.core.execution.types import TurnRecord
 from flowpay.core.json import JsonObject, to_json_object
 from flowpay.core.knowledge import PostgresVectorStore
+from typing_extensions import TypedDict
 
 from .corpus import CorpusSettings, prepare_corpus
 from .models import KnowledgeBuildPlan

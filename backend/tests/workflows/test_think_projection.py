@@ -9,11 +9,12 @@ from flowpay.core.agent.turn import AgentTurn
 from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.execution.contracts import TurnInput
 from flowpay.core.execution.runtime import AgentRuntime
+from flowpay.core.json import JsonObject, parse_json, require_list, require_object
 
 from .fixtures import Model, completion, search_call
 from .test_seen_restore import NoopTracer
 
-BIG_RESULT = {"rows": [{"id": "pay_bg_001_0003", "note": "x" * 200} for _ in range(4)]}
+BIG_RESULT: JsonObject = {"rows": [{"id": "pay_bg_001_0003", "note": "x" * 200} for _ in range(4)]}
 
 
 def agent_with_tool_exchange(model: Model, policy: ContextPolicy | None) -> AgentTurn:
@@ -22,7 +23,7 @@ def agent_with_tool_exchange(model: Model, policy: ContextPolicy | None) -> Agen
     最后一段交换的存活保护优先于占位替换（contracts §4），因此对照场景必须让
     大工具结果落在非存活位置，"开启 vs 关闭"才会表现出差异。
     """
-    runtime = AgentRuntime(cast(Tracer, NoopTracer()), collection_id="fixture")
+    runtime = AgentRuntime(cast("Tracer", cast(object, NoopTracer())), collection_id="fixture")
     agent = AgentTurn.start(
         TurnInput("排查这笔支付", [], {}),
         runtime,
@@ -44,10 +45,11 @@ async def test_projection_off_sends_raw_messages() -> None:
     model = Model()
     agent = agent_with_tool_exchange(model, None)
     await agent.think()
-    request_messages = model.requests[0]["messages"]
+    request_messages = require_list(require_object(model.requests[0])["messages"])
     # think() 在请求之后才回填本次回答，比较请求时刻的前五条。
     assert request_messages == agent.messages.messages[:5]
-    assert request_messages[3]["content"] == json.dumps(BIG_RESULT, ensure_ascii=False)
+    tool = require_object(request_messages[3])
+    assert tool["content"] == json.dumps(BIG_RESULT, ensure_ascii=False)
 
 
 async def test_projection_on_replaces_oversized_tool_result() -> None:
@@ -58,9 +60,9 @@ async def test_projection_on_replaces_oversized_tool_result() -> None:
         model, ContextPolicy(char_budget=2000, tool_result_budget=100)
     )
     await agent.think()
-    request_messages = model.requests[0]["messages"]
+    request_messages = require_list(require_object(model.requests[0])["messages"])
     assert request_messages[4] == agent.messages.messages[4]  # 最后一段 assistant 原样
-    body = json.loads(str(request_messages[3]["content"]))
+    body = require_object(parse_json(str(require_object(request_messages[3])["content"])))
     assert body["placeholder"] is True
     assert body["target"] == "search_documents"
     assert body["rows"] == 4

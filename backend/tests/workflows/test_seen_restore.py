@@ -15,7 +15,7 @@ from .fixtures import Model
 class NoopTracer:
     """只吞事件的追踪替身；本测试不发起任何模型或工具调用。"""
 
-    async def emit(self, *args: object, **kwargs: object) -> None:
+    async def emit(self, *_args: object, **_kwargs: object) -> None:
         return None
 
 
@@ -28,7 +28,11 @@ def restored_seen() -> set[str]:
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "query_sql", "arguments": "{}"}}
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "query_sql", "arguments": "{}"},
+                }
             ],
         },
         {
@@ -41,7 +45,7 @@ def restored_seen() -> set[str]:
     turn = TurnInput(
         "继续看看这笔", [], {"messages": messages, "evidence": [], "collection_id": "fixture"}
     )
-    runtime = AgentRuntime(cast(Tracer, NoopTracer()), collection_id="fixture")
+    runtime = AgentRuntime(cast("Tracer", cast(object, NoopTracer())), collection_id="fixture")
     agent = AgentTurn.start(turn, runtime, "系统提示词", Model(), Budget(4, 4))
     return agent.seen
 

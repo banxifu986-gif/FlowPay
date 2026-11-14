@@ -30,9 +30,9 @@ from ..workflows.fixtures import (
 def test_chat_history_keeps_original_text_without_duplicate_resumed_question() -> None:
     """界面历史转换只移除事件元数据，原文和引用不被偷偷改写。"""
     history: list[ChatMessage] = [
-        {"role": "user", "content": "HTTP 410？", "run_id": "old", "seq": 1},
-        {"role": "assistant", "content": ANSWER, "run_id": "old", "seq": 2},
-        {"role": "user", "content": "怎么恢复？", "run_id": "new", "seq": 3},
+        {"role": "user", "content": "HTTP 410？", "run_id": "old", "seq": 1, "usage": None},
+        {"role": "assistant", "content": ANSWER, "run_id": "old", "seq": 2, "usage": None},
+        {"role": "user", "content": "怎么恢复？", "run_id": "new", "seq": 3, "usage": None},
     ]
     result = chat_messages(TurnInput("怎么恢复？", history, {}, resumed=True), "system")
     assert result == [

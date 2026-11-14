@@ -7,7 +7,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import uvicorn
-
 from flowpay.core.config import ModelSettings, Settings, load_settings
 from flowpay.core.http import create_app
 

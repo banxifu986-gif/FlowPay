@@ -356,4 +356,3 @@ export function ChatPanel({
     </section>
   )
 }
-
