@@ -46,6 +46,6 @@ Date: 2026-11-14。所有决策已在计划定稿（pi-agent-snuggly-floyd.md）
 
 ## R-8 multi-agent 的 usage 汇总归属
 
-- **Decision**: SharedTurn 增加 entries 收集（各 worker 与 synthesizer 的 AgentTurn 累计结果都登记进去）；graph.run 末尾 `sum_entries` 汇总写入 TurnResult.usage。
-- **Rationale**: SharedTurn 已是本轮全体 Agent 共享资源的既有落点（budget/findings 同模式）；汇总维度是"本轮"，与 FR-1 的 per-run 语义一致。
-- **Alternatives considered**: 每 worker 单独上报、前端自行累加（拒：前端拿到的是合成回答，用量应与回答对齐）。
+- **Decision**: SharedTurn 增加 usage_entries 收集：worker 的调用经 AgentTurn 累计、`investigate()` 收尾时并入（finally，pending 短路路径同样收集）；route / plan / synthesize 的直连 `ChatClient.call` 调用点各自登记一条 entry（这些节点不经 AgentTurn——2026-11-14 实施核实）；graph.run 末尾 `sum_entries` 汇总写入 TurnResult.usage。
+- **Rationale**: SharedTurn 已是本轮全体 Agent 共享资源的既有落点（budget/findings 同模式）；直连调用点是诚实用量口径的必然覆盖面——只统计 worker 会漏掉意图分类、拆解与汇总的调用。汇总维度是"本轮"，与 FR-1 的 per-run 语义一致。
+- **Alternatives considered**: 只统计 AgentTurn 调用（拒：漏计约半数调用，口径失真）；每 worker 单独上报、前端自行累加（拒：前端拿到的是合成回答，用量应与回答对齐）。

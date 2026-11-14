@@ -9,13 +9,13 @@
 
 ## Phase 1: Setup（基线确认）
 
-- [ ] T001 容器基线确认：Linux 容器跑既有全量（quickstart 口径命令），记录精确数字（基线参照 13 failed / 144 passed / 17 skipped，均为既有数据源配置问题）；该口径贯穿 T004/T023/T026
+- [x] T001 容器基线确认（2026-11-14）：`13 failed / 160 passed / 21 skipped`。13 条既有失败逐条记录：`test_benchmark_harness.py::test_chunk_alignment_skips_the_title_only_block`、`test_evidence_matches_by_heading_not_by_number`（数据集相关）+ `test_agent_loop.py` 的 manual-loop 11 条（`test_model_can_repair_its_own_request[manual-loop-unknown_tool/invalid_json/invalid_limit/boolean_limit/blank_query/truncated]`、`test_budget_is_per_turn_and_tool_history_survives`、`test_current_state_is_saved_and_collection_mismatch_is_rejected`、`test_cancel_after_success_keeps_previous_checkpoint`、`test_unknown_citation_does_not_retry_or_discard_answer`、`test_previous_workflow_version_requires_new_session`——数据源策略未配置）。该口径贯穿 T004/T023/T026
 
 ## Phase 2: Foundational（P3 fixtures 增强，无行为变化）
 
-- [ ] T002 fixtures `completion()` 加可选 `usage` 参数（backend/tests/workflows/fixtures.py；缺省 None，不改变既有用例响应形状；usage 形状见 data-model §1：prompt/completion/total_tokens）
-- [ ] T003 fixtures `Model` 加可选分片开关（backend/tests/workflows/fixtures.py；`chunked_content` 正文拆多 chunk、`chunked_tool_args` 工具参数 JSON 分片发射；缺省关闭 = 现有单 chunk 行为，驱动 ChatStreamAccumulator 分片路径）
-- [ ] T004 fixtures 回归：既有全部用例原样通过，确认零断言修改（容器或宿主机定向 pytest）
+- [x] T002 fixtures `completion()` 加可选 `usage` 参数（backend/tests/workflows/fixtures.py；缺省 None，不改变既有用例响应形状；usage 形状见 data-model §1：prompt/completion/total_tokens）。验收：既有用例零断言修改全部通过
+- [x] T003 fixtures `Model` 加可选分片开关（backend/tests/workflows/fixtures.py；`chunked_content` 正文拆多 chunk、`chunked_tool_args` 工具参数 JSON 拆 3 片发射；开启时经 ChatStreamAccumulator 重组返回；缺省关闭 = 现有单 chunk 行为）。验收：分片路径由后续用量/投影用例驱动，既有用例不受影响
+- [x] T004 fixtures 回归（2026-11-14）：容器全量 `13 failed / 160 passed / 21 skipped`，失败集合与 T001 基线逐条一致，零断言修改
 
 ## Phase 3: User Story 1 — 每轮回答可见 token 用量（Priority: 高）
 
@@ -25,7 +25,7 @@
 - [ ] T006 [US1] usage_view 单测（backend/tests/chat/test_usage_view.py 新建：带 usage / usage 为 None / usage 空对象 / 部分字段缺失 / 聚合含 None 位 → None / 空 entries → model_calls=0 全 None）
 - [ ] T007 [US1] TurnResult 新增 `usage: UsageSummary | None = None`（backend/src/flowpay/core/execution/contracts.py；docstring 注明零模型调用轮为 None）
 - [ ] T008 [US1] AgentTurn 用量累计与写入（backend/src/flowpay/core/agent/turn.py：新增 usage_entries 累计，think() 每次 chat.call 返回后提取一条，**含被 ModelOutputError 拒绝的调用**；accept()/pause() 以 sum_entries 写 TurnResult.usage；give_up 保持 None）
-- [ ] T009 [US1] multi-agent 用量汇总（backend/src/flowpay/workflows/multi_agent/state.py SharedTurn 增加 usage_entries；investigation.py 的 investigate() 在 worker 收尾时并入 agent.usage_entries；graph.py run() 末尾 sum_entries 写入 TurnResult.usage；R-8）
+- [ ] T009 [US1] multi-agent 用量汇总（backend/src/flowpay/workflows/multi_agent/state.py SharedTurn 增加 usage_entries；investigation.py `investigate()` finally 并入 agent.usage_entries——pending 短路路径同样收集；route/plan/synthesize 的直连 call 调用点各自登记 entry（不经 AgentTurn，见 R-8）；graph.py run() 末尾 sum_entries 写入 TurnResult.usage）
 - [ ] T010 [US1] manager 提交 usage（backend/src/flowpay/core/execution/manager.py `_execute`：message.assistant payload 增加可缺失的 `usage` 键，仅 outcome.usage 非 None 时写入；提交原子性与其余 payload 不动）
 - [ ] T011 [P] [US1] session_view 用量读取（backend/src/flowpay/core/chat/types.py 的 ChatMessage 增加 usage 字段、session_view.py message.assistant 分支缺键宽容读取，缺键记 None；旧事件重放不受影响）
 - [ ] T012 [US1] 用量链路契约测试（新建 backend/tests/chat/test_usage_wiring.py：manual_loop 一轮后 message.assistant payload 含 usage 且数值 = 各次调用之和；零调用轮 give_up → payload 无 usage 键；旧事件流重放缺键不出错）

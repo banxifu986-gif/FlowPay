@@ -11,14 +11,22 @@ from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.json import JsonObject, to_json_object
 from flowpay.core.knowledge.contracts import Passage, PassageSource
 from flowpay.core.llm.chat import ChunkSink
+from flowpay.core.llm.chat.stream import ChatStreamAccumulator
 
 ANSWER = "HTTP 410 后禁用端点。\n\n[doc:RULE-1#c001]"
 
 
 def completion(
-    content: str | None = None, calls: list[JsonObject] | None = None, finish: str | None = None
+    content: str | None = None,
+    calls: list[JsonObject] | None = None,
+    finish: str | None = None,
+    usage: JsonObject | None = None,
 ) -> ChatCompletion:
-    """构造原生模型响应；附加供应商字段用于检查回填时没有丢失。"""
+    """构造原生模型响应；附加供应商字段用于检查回填时没有丢失。
+
+    usage 按协议形状（prompt/completion/total_tokens）放进响应；缺省 None
+    保持既有用例的响应形状，响应里不出现 usage 键。
+    """
     return ChatCompletion.model_validate(
         {
             "id": "fixture",
@@ -37,6 +45,7 @@ def completion(
                     },
                 }
             ],
+            **({"usage": usage} if usage else {}),
         }
     )
 
@@ -174,8 +183,14 @@ class Model:
     name: str = "fixture"
     capabilities: dict[str, bool] = {"tools": True, "streaming": True}
 
-    def __init__(self) -> None:
-        """测试显式安排每次调用结果，不用固定业务结论代替真实运行实现。"""
+    def __init__(self, chunked_content: int = 1, chunked_tool_args: bool = False) -> None:
+        """测试显式安排每次调用结果，不用固定业务结论代替真实运行实现。
+
+        chunked_content > 1 或 chunked_tool_args 时，invoke 把预设响应拆成原生
+        流式帧经 ChatStreamAccumulator 重组返回，驱动分片路径；缺省保持原行为。
+        """
+        self.chunked_content: int = max(1, chunked_content)
+        self.chunked_tool_args: bool = chunked_tool_args
         self.responses: list[ChatCompletion | Exception] = []
         self.requests: list[JsonObject] = []
 
@@ -195,9 +210,86 @@ class Model:
         result = self.responses.pop(0)
         if isinstance(result, Exception):
             raise result
+        if self.chunked_content > 1 or self.chunked_tool_args:
+            return await self._invoke_chunked(result, emit)
         if result.choices[0].message.content:
             await emit({"kind": "content_delta", "text": result.choices[0].message.content})
         return result
+
+    async def _invoke_chunked(self, result: ChatCompletion, emit: ChunkSink) -> ChatCompletion:
+        """按原生分片帧发射预设响应，由 ChatStreamAccumulator 重组返回。"""
+        accumulator = ChatStreamAccumulator()
+        for frame_chunk in self.wire_frames(result):
+            text = accumulator.consume(frame_chunk)
+            if text:
+                await emit({"kind": "content_delta", "text": text})
+        return accumulator.finish()
+
+    def wire_frames(self, result: ChatCompletion) -> list[JsonObject]:
+        """把预设响应拆成原生分片帧：正文按 chunked_content 分片，工具参数再拆片发射。"""
+        choice = result.choices[0]
+        message = choice.message
+
+        def frame(delta: JsonObject, finish: str | None = None) -> JsonObject:
+            return {
+                "id": "fixture",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "fixture",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+            }
+
+        frames: list[JsonObject] = [frame({"role": "assistant"})]
+        fields = message.model_dump(mode="json", exclude_unset=True, exclude_none=True)
+        for field, value in fields.items():
+            if field not in {"role", "content", "tool_calls"}:
+                # reasoning_content 等公开扩展字段按原样作为一次增量发射。
+                frames.append(frame({field: value}))
+        for piece in fragments(message.content or "", self.chunked_content):
+            frames.append(frame({"content": piece}))
+        for position, call in enumerate(message.tool_calls or []):
+            frames.append(
+                frame(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": position,
+                                "id": call.id,
+                                "type": "function",
+                                "function": {"name": call.function.name},
+                            }
+                        ]
+                    }
+                )
+            )
+            pieces = fragments(call.function.arguments, 3) if self.chunked_tool_args else [call.function.arguments]
+            for piece in pieces:
+                frames.append(
+                    frame({"tool_calls": [{"index": position, "function": {"arguments": piece}}]})
+                )
+        frames.append(frame({}, choice.finish_reason))
+        if result.usage is not None:
+            frames.append(
+                {
+                    "id": "fixture",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "fixture",
+                    "choices": [],
+                    "usage": result.usage.model_dump(mode="json", exclude_unset=True),
+                }
+            )
+        return frames
+
+
+def fragments(text: str, count: int) -> list[str]:
+    """把文本拆成至多 count 个非空片段；文本过短或 count<=1 时返回单片段。"""
+    if not text or count <= 1:
+        return [text] if text else []
+    count = min(count, len(text))
+    size, extra = divmod(len(text), count)
+    offsets = [i * size + min(i, extra) for i in range(count + 1)]
+    return [text[offsets[i] : offsets[i + 1]] for i in range(count)]
 
 
 def grounded(
