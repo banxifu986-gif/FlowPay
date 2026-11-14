@@ -31,12 +31,15 @@ make quality
 | SC-5 并行隔离 | Send 并行下断言各 worker 的 model.request 互不污染、共享对象不受投影影响 |
 | SC-6 质量门禁 | make quality 全过 |
 
-## 手工冒烟（可选，opt-in 后）
+## 手工冒烟（2026-11-14 真机已执行，记录与推荐配置）
 
-1. 开启投影配置，驱动一段长排查会话（多轮、SQL 结果大）
-2. 检查 var/live 事件库：后续 `model.request` 的 messages 体积受控；早期 tool 消息为占位摘要且保留 record_ids
-3. 前端回答旁可见 usage 数值；compatible 端点缺失 usage 时展示"未知"而非 0
-4. 跨轮引用上一轮记录编号，回答不被 disputed 拦截；引用编造编号仍被拦截
+真实模型（火山 coding 端点 + deepseek-v4-flash-ga）六轮冒烟，compose 栈 + `docker compose run -d --no-deps --service-ports backend`：
+
+1. **投影关闭基线**：六轮全部携带 usage 契约；events 侧 prompt_tokens 之和与 API 返回逐轮一致（511/1468/7322/60219/32090/503）；排查轮单请求峰值 42,193 字符（大 SQL dump 反复携带）
+2. **投影开启 30000/1200**：小轮次与关闭态一致（等价性验证）；排查轮峰值钳至 7,296；该轨迹下零占位触发（大结果恰在存活位，属预期）
+3. **定向重演 30000/400**：占位触发 8/43 请求、峰值 22,817；模型诚实降级"投递详情未能获取"（防线正确但证据被压）——400 过激进
+
+**试点推荐起点**：`FLOWPAY_CONTEXT_CHAR_BUDGET=30000`、`FLOWPAY_CONTEXT_TOOL_RESULT_BUDGET=1600`，观察回答质量后逐步收紧；配套驱动脚本 `scripts/smoke_002_usage.py`（usage 契约断言，容器内跑）与 `scripts/analyze_smoke.py`（体积/对账分析，参数：事件库目录 [session id]）。前端 UI 渲染用量属范围外（契约层已验证）。
 
 ## 已知环境注意
 

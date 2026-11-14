@@ -66,7 +66,7 @@
 
 - [x] T025 质量门禁全绿（2026-11-14，按组件口径）：ruff 全部通过（宿主机 uvx ruff 权威口径；含机械修复 scripts 既有 I001/RUF100 债务 16 条——ruff --fix，零行为变更，001 同例授权惯例）；basedpyright **0 errors / 0 warnings**（basedpyright 1.40.0，仓库根 pyrightconfig.json + venv 链接的容器复刻口径；顺带修复我的测试文件类型问题 52 条与 answer_contract 1 条回归）；前端 prettier / vitest 50 passed / vite build 全过（含机械修复 2 个前端文件既有格式债）
 - [x] T026 容器全量回归终验：13 failed / 183 passed / 21 skipped，失败集合与 T001 基线 13 条逐条一致，无扩大；新增用例 23 条全绿
-- [x] T027 手工冒烟：跳过（可选任务；本环境无真实模型端点与数据集——自动化用例已覆盖占位/用量/隔离行为，真机冒烟随部署进行）
+- [x] T027 真机冒烟（2026-11-14 补做，三组真实流量）：①投影关闭基线——六轮全带 usage 契约且 events 对账逐轮一致，排查轮单请求峰值 42,193 字符；②30000/1200 试点——峰值钳至 7,296、小轮次与关闭态等价；③定向重演 30000/400——占位真实触发 8/43、峰值 22,817，模型诚实降级（400 过激进）。驱动与分析脚本：scripts/smoke_002_usage.py、scripts/analyze_smoke.py（类型纪律对齐 smoke_runtime 惯例，basedpyright 0/0）；补记：第三组关闭态对照实测单请求峰值 58,840 字符、110,728 input tokens 的失控轮真实出现——投影兜底价值实证；校准结论见 quickstart 与 research R-2
 - [x] T028 收尾：tasks.md 复选框回填、计划文档与记忆状态更新
 
 ## Post-Review Fixes（2026-11-14 子 Agent 审核后回流）
