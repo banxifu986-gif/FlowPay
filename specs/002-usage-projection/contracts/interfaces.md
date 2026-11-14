@@ -72,7 +72,7 @@ def project_messages(
 3. **永不删除**：首条 system、任何 user 消息、最后一段 assistant 交换；
 4. **占位替换**保留 role=tool 与原 tool_call_id，content 为含 target/行数/记录编号清单的占位摘要；
 5. **预算是尽力目标**：不可删集合自身超预算时，不变量 2（永不删）优先——原样保留不可删消息、尽力压缩其余部分，此时预算未被满足不视为投影失败（T014 对应用例）；
-6. **已知毛边（审核记录在案）**：tool_result_budget 小于占位摘要常量开销（约 150 字符）时，恰好超限的小结果会被换成更大的占位，bootstrap 不拦此类配置；病态输入（tool 消息脱离 assistant 前驱）下整组删除可能丢 assistant 留下孤儿 tool——真实数据流经 MessageLog 产生不出该输入，全函数兜底不抛异常。
+6. **替换只在实际缩小时发生 + 孤儿 tool 清理**（审核毛边 6a/6b 已修复）：占位摘要先构造后比较体积，不比原结果小时保留原样——预算只是触发条件，替换永不使上下文变胖；整组删除按 tool_call_id 属主关系延伸，属主 assistant 被删时其非相邻 tool 一并删除，病态排序不产生配对悬空（各有一条钉住用例）。
 
 - policy=None 由调用方短路（不进入投影）；`project_messages` 本身要求显式 policy。
 

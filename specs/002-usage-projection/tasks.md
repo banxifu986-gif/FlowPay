@@ -76,6 +76,7 @@
 - [x] R01 [Important] FR-12 补齐：新增 `test_chunked_stream_usage_flows_to_frontend`——Model 开启分片（chunked_content=2 + chunked_tool_args=True）走 ChatStreamAccumulator 重组路径跑一轮文档问答，断言用量逐位求和与 model.delta 分片发射确实发生；分片 fixtures 不再是死代码，流式→usage 组合路径获得集成覆盖
 - [x] R02 [Important] SC-4 multi-agent 跨轮口径（方案 (a)）：graph.py 新增 `fold_finding_record_ids(shared)` 于 run() 的 discard_stale 之后调用——存活 findings 的 digest/target 编号并入 shared.seen（编号来自真实工具返回，防线语义不变）；消除"上轮查到的编号本轮引用被 synthesize 误拦一次"的 R-5 同源缺口；配套单测 test_findings_digest_ids_enter_shared_seen
 - [x] R03 [Minor] 工件口径修正：contracts §3/§8 改为子模块直连导入风格表述；data-model §4 target 示例改为工具函数名口径 + §6 补 run.started 快照两键说明；T023 措辞改准（answer_contract 3 行 usage 键补齐）；quickstart 基线数字更新（起点 13/160/21、终态 13/183/21）；research R-2 补实施口径注；contracts §4 增第 6 条毛边记录（小预算反胖、病态输入孤儿 tool）
+- [x] R04 [Minor→已修] 审核毛边 6a/6b 从"记录在案"升级为代码修复：6a 占位替换改为"先构造后比较体积，不比原结果小则保留原样"（预算只是触发条件，替换数学上不可能使上下文变胖，无需拍常量下限）；6b 整组删除按 tool_call_id 属主关系延伸，属主 assistant 被删时其非相邻 tool 一并删除，病态排序不产生配对悬空。各配一条钉住用例（test_replacement_only_when_actually_smaller / test_orphan_tool_follows_dropped_assistant），contracts §4 条 6 改写为已修复口径
 
 ## 依赖与执行顺序
 

@@ -144,7 +144,11 @@ def _placeholder_for(message: JsonObject, tool_name: str) -> JsonObject:
 
 
 def _replace_oversized_tools(messages: list[JsonObject], budget: int) -> list[JsonObject]:
-    """把超出单条预算的旧工具结果换成占位摘要；role 与 tool_call_id 原样保留。"""
+    """把超出单条预算的旧工具结果换成占位摘要；role 与 tool_call_id 原样保留。
+
+    预算只是触发条件：占位摘要先构造后比较体积，不比原结果小时保留原样——
+    替换本身不得使上下文变胖（contracts §4 条 6）。
+    """
     live = _live_tool_ids(messages)
     names = _tool_names(messages)
     result: list[JsonObject] = []
@@ -156,7 +160,8 @@ def _replace_oversized_tools(messages: list[JsonObject], budget: int) -> list[Js
             and tool_id not in live
             and _chars(message) > budget
         ):
-            result.append(_placeholder_for(message, names.get(tool_id, "")))
+            placeholder = _placeholder_for(message, names.get(tool_id, ""))
+            result.append(placeholder if _chars(placeholder) < _chars(message) else message)
         else:
             result.append(message)
     return result
@@ -190,4 +195,16 @@ def _drop_oldest_rounds(messages: list[JsonObject], budget: int) -> list[JsonObj
             break
         total -= sum(sizes[position] for position in group)
         dropped.update(group)
+    # 病态排序（tool 消息与其 assistant 不相邻）下，删 assistant 会留下引用悬空的
+    # tool 消息，供应商会拒绝整个请求；属主被删时把这些 tool 一并删除（contracts §4 条 6）。
+    dropped_ids: set[str] = set()
+    for position in dropped:
+        if _role(messages[position]) == "assistant":
+            calls = cast("list[JsonObject]", messages[position].get("tool_calls") or [])
+            dropped_ids.update(
+                call_id for call in calls if isinstance((call_id := call.get("id")), str)
+            )
+    for position, message in enumerate(messages):
+        if _role(message) == "tool" and _tool_id(message) in dropped_ids:
+            dropped.add(position)
     return [message for position, message in enumerate(messages) if position not in dropped]

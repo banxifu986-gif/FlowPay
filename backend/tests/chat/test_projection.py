@@ -146,6 +146,38 @@ def test_budget_unsatisfiable_keeps_protected() -> None:
     assert project_messages(messages, tight) == messages
 
 
+def test_replacement_only_when_actually_smaller() -> None:
+    """毛边 6a：预算触发但占位更大时保留原样——替换永不使上下文变胖。"""
+    small = json.dumps({"rows": [{"id": "pay_bg_001_0003", "note": "y" * 40}]}, ensure_ascii=False)
+    messages: list[ChatCompletionMessageParam] = [
+        system_message("你是排查助手。"),
+        user_message("排查 pay_bg_001_0003"),
+        assistant_call("c0"),
+        tool_message("c0", small),
+        {"role": "assistant", "content": "结论。"},
+    ]
+    tiny = ContextPolicy(char_budget=5000, tool_result_budget=50)
+    result = as_objects(project_messages(messages, tiny))
+    assert result[3]["content"] == small
+
+
+def test_orphan_tool_follows_dropped_assistant() -> None:
+    """毛边 6b：属主 assistant 被删时，非相邻的 tool 一并删除，不留配对悬空。"""
+    messages: list[ChatCompletionMessageParam] = [
+        system_message("你是排查助手。"),
+        user_message("开始排查"),
+        assistant_call("c0"),
+        user_message("补充一句"),
+        tool_message("c0", big_result()),
+        {"role": "assistant", "content": "结论。"},
+    ]
+    tight = ContextPolicy(char_budget=600, tool_result_budget=10000)
+    result = as_objects(project_messages(messages, tight))
+    surviving = {str(m.get("tool_call_id")) for m in result if m.get("role") == "tool"}
+    assert surviving == set()
+    assert result[0] == messages[0] and result[1] == messages[1] and result[-1] == messages[-1]
+
+
 def test_long_session_volume_is_bounded() -> None:
     """长会话（T017）：投影后体积受控、输入原样、存活集合与占位编号可核查。"""
     messages = long_conversation(20)
