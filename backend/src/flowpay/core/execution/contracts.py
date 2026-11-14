@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from flowpay.core.chat.types import ChatMessage
+from flowpay.core.chat.usage_view import UsageSummary
 from flowpay.core.execution.stage import StageCard
 from flowpay.core.execution.types import TurnResultStatus
 from flowpay.core.json import JsonObject
@@ -32,12 +33,14 @@ class TurnResult:
         status: completed 表示回答完成；waiting_user 表示提交后等待新的用户输入，
             本轮就此结束，不会挂起协程。
         evidence: 交给界面展开的片段，落库时由管理器序列化。
+        usage: 本轮模型调用的用量汇总；一次模型都没调时为 None。
     """
 
     text: str
     saved_state: JsonObject
     status: TurnResultStatus = "completed"
     evidence: list[Passage] = field(default_factory=list)
+    usage: UsageSummary | None = None
 
 
 @dataclass

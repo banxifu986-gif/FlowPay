@@ -209,16 +209,22 @@ def task_messages(
 async def investigate(
     agent: AgentTurn, shared: SharedTurn, worker: Literal["sql", "docs"]
 ) -> NodeOutput:
-    """跑一个调查员的循环直到交出报告；追问置位后照常回填完工具结果再收束（R5）。"""
-    while agent.may_think() and not shared.pending:
-        reply = await agent.think()
-        if reply.is_answer:
+    """跑一个调查员的循环直到交出报告；追问置位后照常回填完工具结果再收束（R5）。
+
+    无论以报告还是追问收束，本轮用量都在收尾并入共享（pending 短路同样计入）。
+    """
+    try:
+        while agent.may_think() and not shared.pending:
+            reply = await agent.think()
+            if reply.is_answer:
+                shared.seen.update(agent.seen)
+                return {"reports": [WorkerReport(worker, reply.text)]}
+            for action in reply.actions:
+                agent.observe(await agent.perform(action))
             shared.seen.update(agent.seen)
-            return {"reports": [WorkerReport(worker, reply.text)]}
-        for action in reply.actions:
-            agent.observe(await agent.perform(action))
-        shared.seen.update(agent.seen)
-    return {"reports": []}
+        return {"reports": []}
+    finally:
+        shared.usage_entries.extend(agent.usage_entries)
 
 
 def plan_node(
@@ -235,6 +241,7 @@ def plan_node(
             {"role": "user", "content": content},
         ]
         completion, _ = await runtime.chat(model).call(messages, [SET_TASKS], output="internal")
+        shared.record_usage(completion)
         tasks = read_plan(completion)
         # 任务数决定调查员的工具额度：每个子任务约 3 次查询（R3）。
         shared.budget.extend(shared.budget.model_calls, shared.budget.tool_calls + 3 * len(tasks))
@@ -405,6 +412,7 @@ def synthesize_node(
             {"role": "user", "content": content},
         ]
         completion, _ = await runtime.chat(model).call(messages)
+        shared.record_usage(completion)
         answer = answer_text(completion)
         invented = sorted({name for name in record_ids(answer) if name not in shared.seen})
         if invented:
@@ -414,6 +422,7 @@ def synthesize_node(
                 {"role": "system", "content": DISPUTE.format(names="、".join(invented))}
             )
             completion, _ = await runtime.chat(model).call(messages)
+            shared.record_usage(completion)
             answer = answer_text(completion)
         return {"answer": answer, "waiting": False}
 

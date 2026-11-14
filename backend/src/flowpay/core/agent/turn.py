@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 from openai.types.chat import ChatCompletionMessageParam
 
 from flowpay.core.chat.context import chat_messages
+from flowpay.core.chat.usage_view import UsageEntry, from_completion, sum_entries
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.json import JsonObject, to_json_object
 from flowpay.core.knowledge.contracts import Passage
@@ -81,11 +82,14 @@ class AgentTurn:
     toolbox: Toolbox = field(init=False)
     # 工具真的返回过的记录编号，加上用户在本会话里给出的——后者是调查输入，不是模型编的。
     seen: set[str] = field(init=False)
+    # 本轮每次模型响应的用量；被纠正循环拒绝的调用也计——费用已经发生。
+    usage_entries: list[UsageEntry] = field(init=False)
 
     def __post_init__(self) -> None:
         """先给一个空工具箱；阶段调用 offer 之后才有工具交给模型。"""
         self.toolbox = self.runtime.toolbox([])
         self.seen = set(record_ids(self.question)) | set(given_record_ids(self.messages))
+        self.usage_entries = []
 
     @classmethod
     def start(
@@ -140,6 +144,7 @@ class AgentTurn:
                 [*self.messages.messages, *correction, *closing],
                 [] if forced else self.toolbox.definitions(),
             )
+            self.usage_entries.append(from_completion(completion))
             try:
                 reply = read_reply(completion, call_id, forced)
             except ModelOutputError as error:
@@ -201,6 +206,7 @@ class AgentTurn:
             reply.text,
             self.checkpoint(stop_reason=reason, **state),
             evidence=self.retrieved.all(),
+            usage=sum_entries(self.usage_entries),
         )
 
     def pause(self, question: str, **state: object) -> TurnResult:
@@ -215,6 +221,7 @@ class AgentTurn:
             self.checkpoint(stop_reason=StopReason.NEED_USER_INPUT, **state),
             status="waiting_user",
             evidence=self.retrieved.all(),
+            usage=sum_entries(self.usage_entries),
         )
 
     def give_up(self, text: str) -> TurnResult:

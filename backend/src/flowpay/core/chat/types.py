@@ -16,6 +16,7 @@ class ChatMessage(TypedDict):
     """界面聊天历史的投影，额外携带 run_id、seq 和引用。
 
     它不是模型请求消息；发送到模型的 messages 使用 SDK 的 ChatCompletionMessageParam。
+    usage 是该轮回答的模型用量汇总，user 消息与旧事件（无用量键）记 None。
     """
 
     role: Literal["user", "assistant"]
@@ -23,6 +24,7 @@ class ChatMessage(TypedDict):
     run_id: str | None
     seq: int
     evidence: NotRequired[list[JsonObject]]
+    usage: JsonObject | None
 
 
 class SessionSummary(TypedDict):

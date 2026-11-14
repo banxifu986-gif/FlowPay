@@ -31,7 +31,7 @@ DOC_QA_PROMPT = (
 NO_EVIDENCE = "没有在知识库中找到能回答这个问题的依据。可以换个问法再问一次。"
 
 
-def chitchat_node(model: ChatModel, runtime: AgentRuntime) -> Node:
+def chitchat_node(model: ChatModel, runtime: AgentRuntime, shared: SharedTurn) -> Node:
     """闲聊：一次直调模型，不提供任何工具（SC-2），也不检索。"""
 
     async def node(state: GraphState) -> NodeOutput:
@@ -40,6 +40,7 @@ def chitchat_node(model: ChatModel, runtime: AgentRuntime) -> Node:
             {"role": "user", "content": state["user_message"]},
         ]
         completion, _ = await runtime.chat(model).call(messages)
+        shared.record_usage(completion)
         return {"answer": answer_text(completion), "waiting": False}
 
     return node
@@ -69,6 +70,7 @@ def doc_qa_node(
             },
         ]
         completion, _ = await runtime.chat(model).call(messages)
+        shared.record_usage(completion)
         return {"answer": answer_text(completion), "waiting": False}
 
     return node

@@ -21,14 +21,14 @@
 
 独立验收：构造含/缺 usage 的响应跑一轮，前端收到回答时附带用量汇总（SC-2）。
 
-- [ ] T005 [US1] 用量提取与聚合纯函数（backend/src/flowpay/core/chat/usage_view.py：`UsageEntry`/`UsageSummary` dataclass + `from_completion`/`sum_entries`；容错口径 R-3——usage 缺失/None/空对象 → None 字段，不按 0 补齐，聚合不推测 total；导出经 core.chat __init__）
-- [ ] T006 [US1] usage_view 单测（backend/tests/chat/test_usage_view.py 新建：带 usage / usage 为 None / usage 空对象 / 部分字段缺失 / 聚合含 None 位 → None / 空 entries → model_calls=0 全 None）
-- [ ] T007 [US1] TurnResult 新增 `usage: UsageSummary | None = None`（backend/src/flowpay/core/execution/contracts.py；docstring 注明零模型调用轮为 None）
-- [ ] T008 [US1] AgentTurn 用量累计与写入（backend/src/flowpay/core/agent/turn.py：新增 usage_entries 累计，think() 每次 chat.call 返回后提取一条，**含被 ModelOutputError 拒绝的调用**；accept()/pause() 以 sum_entries 写 TurnResult.usage；give_up 保持 None）
-- [ ] T009 [US1] multi-agent 用量汇总（backend/src/flowpay/workflows/multi_agent/state.py SharedTurn 增加 usage_entries；investigation.py `investigate()` finally 并入 agent.usage_entries——pending 短路路径同样收集；route/plan/synthesize 的直连 call 调用点各自登记 entry（不经 AgentTurn，见 R-8）；graph.py run() 末尾 sum_entries 写入 TurnResult.usage）
-- [ ] T010 [US1] manager 提交 usage（backend/src/flowpay/core/execution/manager.py `_execute`：message.assistant payload 增加可缺失的 `usage` 键，仅 outcome.usage 非 None 时写入；提交原子性与其余 payload 不动）
-- [ ] T011 [P] [US1] session_view 用量读取（backend/src/flowpay/core/chat/types.py 的 ChatMessage 增加 usage 字段、session_view.py message.assistant 分支缺键宽容读取，缺键记 None；旧事件重放不受影响）
-- [ ] T012 [US1] 用量链路契约测试（新建 backend/tests/chat/test_usage_wiring.py：manual_loop 一轮后 message.assistant payload 含 usage 且数值 = 各次调用之和；零调用轮 give_up → payload 无 usage 键；旧事件流重放缺键不出错）
+- [x] T005 [US1] 用量提取与聚合纯函数（backend/src/flowpay/core/chat/usage_view.py：`UsageEntry`/`UsageSummary` dataclass + `from_completion`/`sum_entries`；容错口径 R-3——usage 缺失/None/空对象 → None 字段，不按 0 补齐，聚合不推测 total，空序列记 None）。验收：T006 七条单测全绿
+- [x] T006 [US1] usage_view 单测（backend/tests/chat/test_usage_view.py 新建 7 条：带 usage / None / 空对象 / 部分缺失 / 全量求和 / 缺失位 None / 空 entries）。验收：容器 7 passed
+- [x] T007 [US1] TurnResult 新增 `usage: UsageSummary | None = None`（backend/src/flowpay/core/execution/contracts.py；docstring 注明零模型调用轮为 None）。验收：编译与类型检查随 T026
+- [x] T008 [US1] AgentTurn 用量累计与写入（turn.py：usage_entries 字段，think() 每次 chat.call 后提取——**含被 ModelOutputError 拒绝的调用**；accept()/pause() 写 sum_entries；give_up 保持 None）。验收：T012 拒绝重答用例
+- [x] T009 [US1] multi-agent 用量汇总（state.py SharedTurn.usage_entries + record_usage()；investigation.py `investigate()` finally 并入——pending 短路同样收集；route/plan/synthesize/直答节点调用点各自登记；graph.py run() 汇总写入）。验收：T012 五调用点用例
+- [x] T010 [US1] manager 提交 usage（manager.py `_execute`：message.assistant payload 增加可缺失的 `usage` 键，仅 outcome.usage 非 None 时写入；提交原子性不动）。验收：T012 端到端
+- [x] T011 [P] [US1] session_view 用量读取（types.py ChatMessage 增加必填 `usage: JsonObject | None`；session_view 两个分支缺键宽容，缺键记 None）。验收：T012 旧事件重放用例
+- [x] T012 [US1] 用量链路契约测试（backend/tests/chat/test_usage_wiring.py 新建 4 条；manual-loop 全链路被数据源门控，改走 multi-agent 轻路径：直答求和 / 全缺 usage 记 None / 五调用点含被拒重答 / 旧事件缺键宽容）。验收：容器 4 passed；全量 13 failed / 171 passed / 21 skipped，失败集合与 T001 基线逐条一致
 
 ## Phase 4: User Story 2 — 长会话上下文受控且引用可信（Priority: 高）
 

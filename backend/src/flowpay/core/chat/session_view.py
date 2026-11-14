@@ -52,6 +52,7 @@ def build_session_view(events: list[Event]) -> SessionView:
                     content=require_text(payload["content"]),
                     run_id=event["run_id"],
                     seq=event["seq"],
+                    usage=None,
                 )
             )
         elif kind == "run.started":
@@ -76,6 +77,8 @@ def build_session_view(events: list[Event]) -> SessionView:
                     evidence=TypeAdapter(list[dict[str, object]]).validate_python(
                         payload.get("evidence", []), strict=True
                     ),
+                    # 缺键宽容：旧事件与零模型调用轮没有 usage 键，记 None。
+                    usage=require_object(payload["usage"]) if "usage" in payload else None,
                 )
             )
         # 检查点只在成功结束（含等待补充）时前进；错误、取消和中断只更新状态。

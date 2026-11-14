@@ -262,6 +262,7 @@ class SessionManager:
                         {
                             "content": outcome.text,
                             "evidence": [to_json_object(p) for p in outcome.evidence],
+                            **({"usage": to_json_object(outcome.usage)} if outcome.usage else {}),
                         },
                     ),
                     ("run.finished", {"status": outcome.status, "state": outcome.saved_state}),

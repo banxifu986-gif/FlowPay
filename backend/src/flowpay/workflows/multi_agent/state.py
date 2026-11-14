@@ -13,7 +13,10 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, Protocol, TypedDict
 
+from openai.types.chat import ChatCompletion
+
 from flowpay.core.agent import Budget
+from flowpay.core.chat.usage_view import UsageEntry, from_completion
 from flowpay.core.json import JsonObject, require_int, require_list, require_object, require_text
 from flowpay.core.knowledge.passages import PassageSet
 from flowpay.workflows.manual_loop import AskUserResult, Case, ToolAction
@@ -110,3 +113,9 @@ class SharedTurn:
     budget: Budget = field(default_factory=lambda: Budget(16, 12))
     actions: list[ToolAction] = field(default_factory=list)
     pending: list[AskUserResult] = field(default_factory=list)
+    # 本轮全部模型调用的用量：worker 由 investigate 收尾并入，直连节点在调用点登记。
+    usage_entries: list[UsageEntry] = field(default_factory=list)
+
+    def record_usage(self, completion: ChatCompletion) -> None:
+        """登记一次直连模型调用的用量；不经 AgentTurn 的节点（route/plan/直答）使用。"""
+        self.usage_entries.append(from_completion(completion))

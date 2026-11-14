@@ -21,6 +21,7 @@ from langgraph.types import Send
 from openai.types.chat import ChatCompletionMessageParam
 
 from flowpay.core.agent.turn import record_ids
+from flowpay.core.chat.usage_view import sum_entries
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
@@ -85,6 +86,7 @@ def build_graph(
         completion, call_id = await runtime.chat(model).call(
             messages, [SET_INTENT], output="internal"
         )
+        shared.record_usage(completion)
         decision = read_intent(completion)
         payload: JsonObject = (
             {"intent": decision.intent, "reason": decision.reason, "source": "model"}
@@ -101,7 +103,7 @@ def build_graph(
     graph.add_node("doc_worker", doc_worker_node(model, prepare_query, runtime, shared, case_note))
     graph.add_node("synthesize", synthesize_node(model, runtime, shared, case_note))
     graph.add_node("doc_qa", doc_qa_node(model, prepare_query, runtime, shared))
-    graph.add_node("chitchat", chitchat_node(model, runtime))
+    graph.add_node("chitchat", chitchat_node(model, runtime, shared))
     graph.add_edge(START, "route")
     graph.add_conditional_edges(
         "route", branch, {"troubleshoot": "plan", "docs": "doc_qa", "chitchat": "chitchat"}
@@ -188,4 +190,5 @@ class MultiAgentWorkflow:
             saved_state=checkpoint,
             evidence=shared.retrieved.all(),
             status="waiting_user" if outcome["waiting"] else "completed",
+            usage=sum_entries(shared.usage_entries) if shared.usage_entries else None,
         )
