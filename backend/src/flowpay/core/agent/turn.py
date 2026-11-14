@@ -31,18 +31,20 @@ if TYPE_CHECKING:
 CLOSING = "本轮工具预算已关闭，请根据已有信息直接回答并说明限制。"
 
 
-def given_record_ids(messages: MessageLog) -> list[str]:
-    """会话里用户自己给出的记录编号，跨轮累计。
+def known_record_ids(messages: MessageLog) -> list[str]:
+    """会话里工具真实返回过、或用户自己给出的记录编号，跨轮累计。
 
-    多轮排查中编号通常只在给出的那一轮出现，之后几轮都在讨论同一条记录。只认本轮
-    就会把用户给过的编号判成模型编的，而工具查空时它又永远进不了 seen，于是模型
-    每次改写都再次被拒，直到预算耗尽。assistant 的历史回答不计入：那是模型自己说的。
+    多轮排查中编号通常只在出现的那一轮之后被持续讨论，只认本轮会把历史编号判成
+    模型编的（specs/002 research.md R-5）。工具返回的编号在 tool 消息的 JSON 正文
+    里；assistant 的历史回答不计入——那是模型自己说的，不是工具返回的。
     """
     found: list[str] = []
     for message in messages.messages:
+        role = message["role"]
         content = message.get("content")
-        if message["role"] == "user" and isinstance(content, str):
-            found.extend(record_ids(content))
+        if role not in {"user", "tool"} or not isinstance(content, str):
+            continue
+        found.extend(record_ids(content))
     return found
 
 
@@ -82,7 +84,7 @@ class AgentTurn:
     def __post_init__(self) -> None:
         """先给一个空工具箱；阶段调用 offer 之后才有工具交给模型。"""
         self.toolbox = self.runtime.toolbox([])
-        self.seen = set(record_ids(self.question)) | set(given_record_ids(self.messages))
+        self.seen = set(record_ids(self.question)) | set(known_record_ids(self.messages))
         self.usage_entries = []
 
     @classmethod

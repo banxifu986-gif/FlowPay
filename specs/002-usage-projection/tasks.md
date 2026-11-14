@@ -44,8 +44,8 @@
 
 独立验收：恢复检查点后回答引用历史轮编号不触发 disputed；编造编号仍拦截（SC-4）。
 
-- [ ] T018 [US4] seen 重建修复（backend/src/flowpay/core/agent/turn.py `__post_init__`：并集增加历史轮 tool 消息 content 编号；assistant 历史消息仍不计入；disputed() 判定规则不动；R-5）
-- [ ] T019 [US4] 跨轮引用回归测试（backend/tests/workflows/ 相应测试文件新增用例：上一轮工具返回编号 → 恢复检查点 → 本轮引用不误拦；无来源编号仍触发改写）
+- [x] T018 [US4] seen 重建修复（turn.py：`given_record_ids` 扩展为 `known_record_ids`——并集增加历史轮 tool 消息 JSON 正文的编号；assistant 历史消息仍不计入；disputed() 判定规则不动；R-5）。验收：T019 两条用例
+- [x] T019 [US4] 跨轮引用回归测试（backend/tests/workflows/test_seen_restore.py 新建：恢复检查点后用户编号与历史轮工具返回编号均在 seen（修复点）、assistant 历史文本编号不计入）。验收：容器 2 passed；全量 13 failed / 179 passed / 21 skipped，失败集合与 T001 基线逐条一致
 
 ## Phase 6: User Story 5 — 并行调查下的投影隔离（Priority: 中）
 
