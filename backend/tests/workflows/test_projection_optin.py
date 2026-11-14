@@ -293,7 +293,7 @@ async def test_plan_and_synthesize_clipped_with_policy(tmp_path: Path) -> None:
         ),
         completion(calls=[search_call("s1", "支付状态")], usage=USAGE),
         completion(calls=[read_call("r1", "RULE-1")], usage=USAGE),
-        completion("长" * 5000, usage=USAGE),
+        completion("长" * 25000, usage=USAGE),
         completion("最终回答。", usage=USAGE),
     ]
     question = "查一下这笔支付"
@@ -315,5 +315,5 @@ async def test_plan_and_synthesize_clipped_with_policy(tmp_path: Path) -> None:
     assert "长" * 5000 not in plan_content
     synthesize_content = user_content(model, "调查报告：")
     assert synthesize_content.startswith(question + "\n\n")
-    assert "已截断 904 字符" in synthesize_content  # 报告 5000 → 4096 读取端上限
-    assert "长" * 4096 in synthesize_content
+    assert "已截断" in synthesize_content  # 报告 25000 超剩余分配读取端预算
+    assert "长" * 25000 not in synthesize_content

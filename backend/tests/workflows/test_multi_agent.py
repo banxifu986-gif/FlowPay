@@ -4,19 +4,24 @@ import asyncio
 import json
 from pathlib import Path
 from time import perf_counter
-from typing import override
+from typing import cast, override
 
 import pytest
+from openai.types.chat import ChatCompletion
 
+from flowpay.core.chat.projection import ContextPolicy
+from flowpay.core.chat.types import SessionView
 from flowpay.core.config import Settings
 from flowpay.core.data_sources import DataSources
 from flowpay.core.event_log import EventStore
 from flowpay.core.execution.manager import SessionManager
 from flowpay.core.execution.resources import RuntimeResources
 from flowpay.core.json import JsonObject, require_list, require_object, require_text
+from flowpay.core.llm.chat import ChunkSink
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.dataset import dataset_path, snapshot_ready
 from flowpay.workflows.multi_agent import MultiAgentWorkflow
+from flowpay.workflows.multi_agent.state import WorkerReport
 
 from .fixtures import (
     Model,
@@ -40,13 +45,14 @@ def make_manager(
     search: Search,
     max_concurrency: int | None = None,
     sources: DataSources | None = None,
+    policy: ContextPolicy | None = None,
 ) -> tuple[SessionManager, RuntimeResources]:
     """真实运行时装配 + 受控模型；与 test_manual_loop 同一套夹具口径。"""
     settings = Settings(
         tmp_path, tmp_path, workflow="multi-agent", knowledge_collection_id="fixture"
     )
     resources = RuntimeResources(settings, sources=sources, retriever=search.for_run)
-    workflow = MultiAgentWorkflow(model, retrieval_input, max_concurrency=max_concurrency)
+    workflow = MultiAgentWorkflow(model, retrieval_input, policy, max_concurrency=max_concurrency)
     manager = SessionManager(EventStore(tmp_path / "events.sqlite"), workflow, settings, resources)
     return manager, resources
 
@@ -568,3 +574,140 @@ async def test_condition_revision_discards_stale_findings(tmp_path: Path) -> Non
     finally:
         await manager.shutdown()
         resources.close()
+
+
+# ---- specs/003 P1（T015）：子 agent 输出预算与失败证据 ----
+
+USAGE: JsonObject = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+GUARD = ContextPolicy(
+    char_budget=100000,
+    tool_result_budget=100000,
+    report_char_budget=100,
+)
+
+
+async def run_solo_troubleshoot(
+    tmp_path: Path, model: Model, search: Search, policy: ContextPolicy | None = None
+) -> SessionView:
+    """单 doc 任务排查轮（不经数据源），返回会话视图。"""
+    manager, resources = make_manager(tmp_path, model, search, policy=policy)
+    try:
+        sid = require_text((await manager.create_session())["id"])
+        await say(manager, sid, "first", "帮我看看这笔支付为什么没收到通知")
+        return await manager.get_session(sid)
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_worker_failure_becomes_error_report(tmp_path: Path) -> None:
+    """调查者内部故障：产出含错误类型/信息/任务目标的错误报告，本轮照常作答（FR-10）。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")], usage=USAGE),
+        completion(
+            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])],
+            usage=USAGE,
+        ),
+        completion(calls=[search_call("s1", "重试策略")], usage=USAGE),
+        grounded("已根据调查报告回答。"),
+    ]
+    search = Search()
+    search.fail = True
+    view = await run_solo_troubleshoot(tmp_path, model, search)
+    assert require_text(view["status"]) == "completed"  # 故障不让整轮失败
+    # 错误报告进入 synthesize 请求：错误类型、信息与任务目标都在。
+    content = json.dumps(model.requests[-1]["messages"], ensure_ascii=False)
+    assert "RuntimeError" in content and "search offline" in content
+    assert "查明重试策略" in content
+
+
+async def test_worker_report_clipped_to_policy_budget(tmp_path: Path) -> None:
+    """报告产出端按 policy 预算截断并携带标记（FR-9）。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")], usage=USAGE),
+        completion(
+            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])],
+            usage=USAGE,
+        ),
+        completion(calls=[search_call("s1", "重试策略")], usage=USAGE),
+        completion("长" * 500, usage=USAGE),
+        grounded("已根据调查报告回答。"),
+    ]
+    view = await run_solo_troubleshoot(tmp_path, model, Search(), policy=GUARD)
+    assert require_text(view["status"]) == "completed"
+    content = json.dumps(model.requests[-1]["messages"], ensure_ascii=False)
+    assert "已截断 400 字符" in content  # 500 → 100 产出端截断
+    assert "长" * 500 not in content
+
+
+async def test_budget_exhausted_worker_reports_findings_slice(tmp_path: Path) -> None:
+    """预算耗尽无报告：按开工基线切片产出预算说明报告（FR-10）。"""
+    from flowpay.core.agent.budget import Budget
+    from flowpay.core.agent.trace import Tracer
+    from flowpay.core.agent.turn import AgentTurn
+    from flowpay.core.execution.contracts import TurnInput
+    from flowpay.core.execution.runtime import AgentRuntime
+    from flowpay.workflows.multi_agent.investigation import budget_report, investigate
+    from flowpay.workflows.multi_agent.state import Finding, SharedTurn
+
+    store = EventStore(tmp_path / "events.sqlite")
+    runtime = AgentRuntime(Tracer(store, "s1", "r1"))
+    shared = SharedTurn(
+        budget=Budget(0, 8),
+        findings=[
+            Finding("sql", "payments account=acct_bg_001", 3, "3 行；首行 id=pay_bg_001_0003")
+        ],
+    )
+    agent = AgentTurn.start(
+        TurnInput("调查任务：查明重试策略", [], {}),
+        runtime,
+        "系统提示",
+        Model(),
+        shared.budget,
+        remember=False,
+    )
+    result = await investigate(agent, shared, "docs", "调查任务：查明重试策略", None)
+    reports = cast("list[WorkerReport]", result["reports"])
+    assert len(reports) == 1
+    assert "预算" in reports[0].text
+    # 切片语义直测：基线之后的 findings 进入说明，基线之前的不重复罗列。
+    sliced = budget_report(shared, "docs", baseline=0, budget=0)
+    assert "acct_bg_001" in sliced.text
+    beyond = budget_report(shared, "docs", baseline=1, budget=0)
+    assert "acct_bg_001" not in beyond.text
+
+
+async def test_cancellation_passes_through_investigate(tmp_path: Path) -> None:
+    """用户取消（CancelledError）不被失败报告吞掉，照常穿透（FR-10）。"""
+    from flowpay.core.agent.budget import Budget
+    from flowpay.core.agent.trace import Tracer
+    from flowpay.core.agent.turn import AgentTurn
+    from flowpay.core.execution.contracts import TurnInput
+    from flowpay.core.execution.runtime import AgentRuntime
+    from flowpay.workflows.multi_agent.investigation import investigate
+    from flowpay.workflows.multi_agent.state import SharedTurn
+
+    store = EventStore(tmp_path / "events.sqlite")
+    runtime = AgentRuntime(Tracer(store, "s1", "r1"))
+    shared = SharedTurn(budget=Budget(4, 4))
+    class CancelModel(Model):
+        """invoke 直接取消的受控模型：驱动取消穿透路径（specs/003 FR-10）。"""
+
+        @override
+        async def invoke(self, request: JsonObject, emit: ChunkSink) -> ChatCompletion:
+            _ = request, emit
+            raise asyncio.CancelledError()
+
+    agent = AgentTurn.start(
+        TurnInput("调查任务：查明重试策略", [], {}),
+        runtime,
+        "系统提示",
+        CancelModel(),
+        shared.budget,
+        remember=False,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await investigate(agent, shared, "docs", "调查任务：查明重试策略", None)

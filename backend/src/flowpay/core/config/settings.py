@@ -61,6 +61,8 @@ class Settings:
     # 消息流；摘要正文超出上限由代码截断（specs/003）。
     context_compaction_trigger_chars: int = 0
     context_summary_char_budget: int = 4000
+    # 调查报告产出端/汇总读取端预算（specs/003 P1，0=不截断）。
+    context_report_char_budget: int = 4096
 
     # 保留复现所需的运行设置；认证环境变量的值不属于快照内容。
     def snapshot(self) -> JsonObject:

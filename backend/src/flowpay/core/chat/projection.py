@@ -45,6 +45,8 @@ class ContextPolicy:
     tool_result_budget: int
     compaction_trigger_chars: int = 0
     summary_char_budget: int = 4000
+    # P1：调查报告产出端与汇总读取端共用一个预算（0=不截断）。
+    report_char_budget: int = 4096
 
 
 def project_messages(

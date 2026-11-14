@@ -37,6 +37,7 @@ def create_workflow(settings: Settings) -> Workflow:
             tool_result_budget=settings.context_tool_result_budget,
             compaction_trigger_chars=settings.context_compaction_trigger_chars,
             summary_char_budget=settings.context_summary_char_budget,
+            report_char_budget=settings.context_report_char_budget,
         )
         if settings.context_char_budget > 0 and settings.context_tool_result_budget > 0
         else None

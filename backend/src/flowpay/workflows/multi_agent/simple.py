@@ -67,7 +67,13 @@ def doc_qa_node(
             return {"answer": NO_EVIDENCE, "waiting": False}
         passages = shared.retrieved.serialize()
         if context_policy:
-            passages = clip_text(passages, context_policy.char_budget)
+            # 剩余分配：片段预算 = 整体预算 − question − 固定前缀；算尽退化为原文。
+            prefix = "\n\n以下是知识库检索到的片段，编号用于引用：\n"
+            passages_budget = max(
+                0, context_policy.char_budget - len(state["user_message"]) - len(prefix)
+            )
+            if passages_budget > 0:
+                passages = clip_text(passages, passages_budget)
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": DOC_QA_PROMPT},
             {
