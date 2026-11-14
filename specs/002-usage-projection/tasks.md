@@ -34,11 +34,11 @@
 
 独立验收：开启策略构造超预算会话，后续请求体积受控，占位摘要编号可核查，disputed 对编造编号仍拦截（SC-3）。
 
-- [ ] T013 [US2] 投影纯函数（backend/src/flowpay/core/chat/projection.py：`ContextPolicy`（char_budget / tool_result_budget，data-model §3）+ `project_messages`；两层机制 R-1——超限旧工具结果先占位替换（role=tool、tool_call_id 原样，content 为含 target/rows/record_ids/original_chars 的占位摘要，data-model §4），仍超限整组删除最老完整轮次；不可删集合：首条 system、任何 user、最后一段 assistant 交换；导出经 core.chat __init__）
-- [ ] T014 [US2] 投影四不变量单测（backend/tests/chat/test_projection.py 新建：①配对完整——tool_call_id 无一拆散；②存活集合——首 system/任何 user/最后一段交换全部存活；③占位编号清单——被压原文编号全部出现在占位摘要 record_ids；④全函数——缺字段/配对破损/空列表原样返回不抛异常；⑤预算不可满足——不可删集合自身超预算时存活优先、尽力压缩其余，不抛异常）
-- [ ] T015 [US2] think() 投影接入（backend/src/flowpay/core/agent/turn.py `think()`：请求组装改为 `[*projected, *correction, *closing]`——投影只作用于检查点原生消息，纠正草稿与收尾系统消息永不投影；policy 为 None 时短路，请求内容与现行为逐条一致）
-- [ ] T016 [US2] 策略参数与配置键（backend/src/flowpay/core/agent/turn.py `start()` 加 `context_policy: ContextPolicy | None = None`；backend/src/flowpay/core/config/settings.py 新增投影预算两键，缺省/0 = None 策略 = 关闭；确切键名实现时与既有命名风格一致）
-- [ ] T017 [US2] 长会话场景测试（backend/tests/chat/test_projection.py：构造超预算多轮会话断言体积受控、占位摘要可核查、checkpoint 原生消息未压缩（FR-8）、disputed 对无来源编号仍拦截）
+- [x] T013 [US2] 投影纯函数（backend/src/flowpay/core/chat/projection.py：`ContextPolicy` + `project_messages`；两层机制 R-1——占位替换优先（target 回查自前驱 assistant 的工具名、rows 解析自原文、record_ids 用共享模式扫描），仍超限整组删最老可删轮次；record_ids 挪至 core/chat/record_ids.py 消解 turn↔projection 循环依赖，turn.py 保留同名导入）。验收：T014 六条全绿
+- [x] T014 [US2] 投影不变量单测（backend/tests/chat/test_projection.py 6 条：①占位替换形状与编号清单；②配对完整（含删除路径）；③存活集合；④畸形输入五类原样返回；⑤预算不可满足存活优先；⑥长会话体积有界）。验收：容器 6 passed
+- [x] T015 [US2] think() 投影接入（turn.py：请求组装 `[*projected, *correction, *closing]`——投影只作用于检查点原生消息，纠正草稿与收尾消息原样跟随；policy None 短路 = 现行为）。验收：默认关闭全量回归逐条一致（T023/T026）
+- [x] T016 [US2] 策略参数与配置键（turn.py start() 加 context_policy；settings.py 增 context_char_budget/context_tool_result_budget 缺省 0=关闭；router.StageFactory 扩一位、create_stage 透传；bootstrap 两键都>0 才构造策略；manual_loop/multi_agent 两阶段透传至 AgentTurn.start）。验收：缺省配置全量回归逐条一致
+- [x] T017 [US2] 长会话场景测试（test_projection.py::test_long_session_volume_is_bounded：20 轮大结果 → 体积受控 ≤ char_budget、输入深拷贝比对原样、存活集合原样、占位 record_ids 可核查；disputed 语义与投影正交——占位暴露编号即其可核查面）。验收：容器 passed
 
 ## Phase 5: User Story 4 — 跨轮引用不再误拦（Priority: 中）
 

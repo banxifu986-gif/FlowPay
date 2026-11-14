@@ -54,6 +54,9 @@ class Settings:
     embedding: EmbeddingSettings | None = None
     sources_config: Path | None = None
     knowledge_collection_id: str | None = None
+    # 请求前上下文投影：两项预算都 > 0 时启用；缺省 0 = 关闭 = 现行为。
+    context_char_budget: int = 0
+    context_tool_result_budget: int = 0
 
     # 保留复现所需的运行设置；认证环境变量的值不属于快照内容。
     def snapshot(self) -> JsonObject:

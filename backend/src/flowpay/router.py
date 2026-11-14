@@ -2,12 +2,13 @@
 
 from collections.abc import Callable
 
+from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.execution.contracts import Workflow
 from flowpay.core.llm.chat import ChatModel
 from flowpay.workflows.manual_loop import ManualLoopWorkflow
 from flowpay.workflows.multi_agent import MultiAgentWorkflow
 
-StageFactory = Callable[[ChatModel, Callable[[str], str]], Workflow]
+StageFactory = Callable[[ChatModel, Callable[[str], str], ContextPolicy | None], Workflow]
 
 # 阶段按名字指代编排方式；不设并列的变体入口。
 STAGES: dict[str, StageFactory] = {
@@ -23,6 +24,11 @@ def resolve_stage(name: str) -> str:
     raise ValueError(f"Unknown stage: {name}; available: {', '.join(STAGES)}")
 
 
-def create_stage(name: str, model: ChatModel, prepare_query: Callable[[str], str]) -> Workflow:
+def create_stage(
+    name: str,
+    model: ChatModel,
+    prepare_query: Callable[[str], str],
+    context_policy: ContextPolicy | None = None,
+) -> Workflow:
     """将装配好的能力交给所选阶段；各阶段保持独立的 run 实现和会话身份。"""
-    return STAGES[resolve_stage(name)](model, prepare_query)
+    return STAGES[resolve_stage(name)](model, prepare_query, context_policy)

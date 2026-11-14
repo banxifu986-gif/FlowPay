@@ -13,6 +13,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from flowpay.core.agent import AgentTurn, Budget
+from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import LogToolSpec, SqlToolSpec, log_tool, sql_tool
 from flowpay.core.execution.contracts import TurnInput, TurnResult
@@ -332,10 +333,16 @@ class ManualLoopWorkflow:
         reply_hint="条件不全时会先问缺哪几项；补齐后接着查，不重复索要已给过的字段。",
     )
 
-    def __init__(self, model: ChatModel, prepare_query: Callable[[str], str]) -> None:
+    def __init__(
+        self,
+        model: ChatModel,
+        prepare_query: Callable[[str], str],
+        context_policy: ContextPolicy | None = None,
+    ) -> None:
         """接收已装配的模型与查询格式函数，不创建外部连接。"""
         self.model: ChatModel = model
         self.prepare_query: Callable[[str], str] = prepare_query
+        self.context_policy: ContextPolicy | None = context_policy
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
         """先合并本轮带来的条件，再跑调查循环；模型选择追问时本轮就此结束。"""
@@ -343,7 +350,12 @@ class ManualLoopWorkflow:
         revision = case.apply(conditions_in(turn.user_message))
         done = restore_queried(turn.saved_state.get("queried"))
         agent = AgentTurn.start(
-            turn, runtime, SYSTEM, self.model, Budget(self.max_model_calls, self.max_tool_calls)
+            turn,
+            runtime,
+            SYSTEM,
+            self.model,
+            Budget(self.max_model_calls, self.max_tool_calls),
+            context_policy=self.context_policy,
         )
         if note := briefing(case, revision):
             agent.messages.add_system_message(note)

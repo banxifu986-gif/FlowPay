@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from flowpay.core.agent import AgentTurn
 from flowpay.core.agent.turn import DISPUTE, record_ids
+from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import log_tool, sql_tool
 from flowpay.core.execution.contracts import TurnInput
@@ -251,7 +252,11 @@ def plan_node(
 
 
 def sql_worker_node(
-    model: ChatModel, runtime: AgentRuntime, shared: SharedTurn, case_note: str | None
+    model: ChatModel,
+    runtime: AgentRuntime,
+    shared: SharedTurn,
+    case_note: str | None,
+    context_policy: ContextPolicy | None = None,
 ) -> Node:
     """业务数据调查员：SQL 与日志工具加追问通道；需要装配数据源策略。"""
 
@@ -263,6 +268,7 @@ def sql_worker_node(
             model,
             shared.budget,
             remember=False,
+            context_policy=context_policy,
         )
         if note := turn_briefing(shared, case_note):
             agent.messages.add_system_message(note)
@@ -342,6 +348,7 @@ def doc_worker_node(
     runtime: AgentRuntime,
     shared: SharedTurn,
     case_note: str | None,
+    context_policy: ContextPolicy | None = None,
 ) -> Node:
     """文档调查员：检索与整篇读回，片段登记进共享引用池供跨节点引用。"""
 
@@ -353,6 +360,7 @@ def doc_worker_node(
             model,
             shared.budget,
             remember=False,
+            context_policy=context_policy,
         )
         if note := turn_briefing(shared, case_note):
             agent.messages.add_system_message(note)

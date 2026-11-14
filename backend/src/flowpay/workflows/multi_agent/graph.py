@@ -21,6 +21,7 @@ from langgraph.types import Send
 from openai.types.chat import ChatCompletionMessageParam
 
 from flowpay.core.agent.turn import record_ids
+from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.chat.usage_view import sum_entries
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
@@ -71,6 +72,7 @@ def build_graph(
     runtime: AgentRuntime,
     shared: SharedTurn,
     case_note: str | None,
+    context_policy: ContextPolicy | None = None,
 ):
     """组装轮内编排图：route → plan → Send 并行调查员 → synthesize。"""
 
@@ -99,8 +101,10 @@ def build_graph(
     graph = StateGraph(GraphState)
     graph.add_node("route", route)
     graph.add_node("plan", plan_node(model, runtime, shared, case_note))
-    graph.add_node("sql_worker", sql_worker_node(model, runtime, shared, case_note))
-    graph.add_node("doc_worker", doc_worker_node(model, prepare_query, runtime, shared, case_note))
+    graph.add_node("sql_worker", sql_worker_node(model, runtime, shared, case_note, context_policy))
+    graph.add_node(
+        "doc_worker", doc_worker_node(model, prepare_query, runtime, shared, case_note, context_policy)
+    )
     graph.add_node("synthesize", synthesize_node(model, runtime, shared, case_note))
     graph.add_node("doc_qa", doc_qa_node(model, prepare_query, runtime, shared))
     graph.add_node("chitchat", chitchat_node(model, runtime, shared))
@@ -140,11 +144,13 @@ class MultiAgentWorkflow:
         self,
         model: ChatModel,
         prepare_query: Callable[[str], str],
+        context_policy: ContextPolicy | None = None,
         max_concurrency: int | None = None,
     ) -> None:
         """接收已装配的模型与查询格式函数；max_concurrency 仅测试用（串行化 Send）。"""
         self.model: ChatModel = model
         self.prepare_query: Callable[[str], str] = prepare_query
+        self.context_policy: ContextPolicy | None = context_policy
         self.max_concurrency: int | None = max_concurrency
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
@@ -175,7 +181,7 @@ class MultiAgentWorkflow:
         config: RunnableConfig | None = (
             {"max_concurrency": self.max_concurrency} if self.max_concurrency else None
         )
-        graph = build_graph(self.model, self.prepare_query, runtime, shared, note)
+        graph = build_graph(self.model, self.prepare_query, runtime, shared, note, self.context_policy)
         outcome = await graph.ainvoke(state, config)
         checkpoint: JsonObject = {
             **turn.saved_state,

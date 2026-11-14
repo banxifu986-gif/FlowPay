@@ -2,6 +2,7 @@
 
 import os
 
+from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.config import Settings
 from flowpay.core.execution.contracts import Workflow
 from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
@@ -28,4 +29,13 @@ def create_workflow(settings: Settings) -> Workflow:
     ):
         if not os.environ.get(key):
             raise ValueError(f"Missing environment variable: {key}")
-    return create_stage(stage, OpenAiChatModel(settings.model), retrieval_input)
+    # 两项预算都 > 0 才启用请求前投影；缺省 0 = 关闭 = 现行为。
+    context_policy = (
+        ContextPolicy(
+            char_budget=settings.context_char_budget,
+            tool_result_budget=settings.context_tool_result_budget,
+        )
+        if settings.context_char_budget > 0 and settings.context_tool_result_budget > 0
+        else None
+    )
+    return create_stage(stage, OpenAiChatModel(settings.model), retrieval_input, context_policy)

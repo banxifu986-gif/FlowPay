@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from openai.types.chat import ChatCompletionMessageParam
 
 from flowpay.core.chat.context import chat_messages
+from flowpay.core.chat.projection import ContextPolicy, project_messages
+from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.chat.usage_view import UsageEntry, from_completion, sum_entries
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.json import JsonObject, to_json_object
@@ -28,15 +29,6 @@ if TYPE_CHECKING:
     from flowpay.core.execution.runtime import AgentRuntime
 
 CLOSING = "本轮工具预算已关闭，请根据已有信息直接回答并说明限制。"
-
-# 业务记录编号形如 pay_bg_001_0003、req_bm_030_01：小写前缀加下划线，且带数字。
-# 用它区分"真的引用了一条记录"和"提到了 FP-4021 这类错误码或字段名"。
-RECORD_ID = re.compile(r"\b[a-z]{2,6}_[A-Za-z0-9_]*\d[A-Za-z0-9_]*\b")
-
-
-def record_ids(text: str) -> list[str]:
-    """文本里出现的记录编号；用 finditer 以保留字符串类型。"""
-    return [match.group(0) for match in RECORD_ID.finditer(text)]
 
 
 def given_record_ids(messages: MessageLog) -> list[str]:
@@ -79,6 +71,8 @@ class AgentTurn:
     runtime: AgentRuntime
     chat: ChatClient
     remember: bool = True
+    # None 表示现行为（全量发送）；策略存在时 think() 先做请求前投影。
+    context_policy: ContextPolicy | None = None
     toolbox: Toolbox = field(init=False)
     # 工具真的返回过的记录编号，加上用户在本会话里给出的——后者是调查输入，不是模型编的。
     seen: set[str] = field(init=False)
@@ -100,6 +94,7 @@ class AgentTurn:
         model: ChatModel,
         budget: Budget,
         remember: bool = True,
+        context_policy: ContextPolicy | None = None,
     ) -> AgentTurn:
         """开始新一轮：有检查点就接着上一轮的消息与片段，否则从系统提示词重新开始。
 
@@ -114,7 +109,14 @@ class AgentTurn:
             messages = MessageLog(chat_messages(turn, system))
             retrieved = PassageSet()
         return cls(
-            turn.user_message, messages, retrieved, budget, runtime, runtime.chat(model), remember
+            turn.user_message,
+            messages,
+            retrieved,
+            budget,
+            runtime,
+            runtime.chat(model),
+            remember,
+            context_policy,
         )
 
     def offer(self, *tools: Tool) -> None:
@@ -140,8 +142,14 @@ class AgentTurn:
                 [{"role": "system", "content": CLOSING}] if forced else []
             )
             self.budget.spend_model_call()
+            # 投影只作用于检查点原生消息；纠正草稿与收尾系统消息原样跟随。
+            projected = (
+                project_messages(self.messages.messages, self.context_policy)
+                if self.context_policy is not None
+                else self.messages.messages
+            )
             completion, call_id = await self.chat.call(
-                [*self.messages.messages, *correction, *closing],
+                [*projected, *correction, *closing],
                 [] if forced else self.toolbox.definitions(),
             )
             self.usage_entries.append(from_completion(completion))
