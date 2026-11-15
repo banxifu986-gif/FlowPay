@@ -12,7 +12,7 @@ class ContextPolicy:
     report_char_budget: int = 4096         # 新增（P1）：报告产出端上限
 ```
 
-bootstrap 装配：投影两项 >0 维持既有构造；压缩两项独立读入（缺省 0）；P1 的 report 项随批次加入。workflows 只透传。
+bootstrap 装配：投影两项 >0 维持既有构造；压缩两项独立读入（缺省 0）；P1 的 report 项随批次加入。workflows 只透传。**依赖注记（审核【7】）**：policy 整体仍门在「投影两项 >0」上——只配压缩触发线而不配投影预算时压缩静默失效；这是防「预算 0 病态路径」的已批准取舍，试点组合（四键齐配）不受影响。
 
 ## 2. core/chat/compaction.py（新增，纯函数层）
 
@@ -73,11 +73,11 @@ def clip_text(text: str, budget: int, marker: str = CLIP_MARKER) -> str
 
 | 节点 | 文件 | 变更 | 变量段 |
 |---|---|---|---|
-| route | graph.py | 闭包捕获 context_policy | 无（裸问题） |
+| route | graph.py | 无需 policy（无变量段） | 无（裸问题） |
 | plan | investigation.py | 同上 | 已知条件与已执行查询简报 |
 | synthesize | investigation.py | 同上 | 简报 + 每份报告（clip_text 上限 4096） |
 | doc_qa | simple.py | 同上 | 检索片段 serialize |
-| chitchat | simple.py | 同上 | 无 |
+| chitchat | simple.py | 无需 policy（无变量段） | 无 |
 
 policy=None 时输出与现 f-string 拼接逐字一致（回归契约，测试钉住）。
 

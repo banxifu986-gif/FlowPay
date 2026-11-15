@@ -158,10 +158,9 @@ def analyze(events: list[Event]) -> None:
         # 改为核对结构化记忆封顶（P2 治理链）。
         from flowpay.workflows.multi_agent.state import FINDINGS_CAP
 
-        last_state = (
-            require_object(finished[-1]["payload"]).get("state") if finished else {}
-        )
-        findings = require_list(require_object(last_state or {}).get("findings") or [])
+        payload = require_object(finished[-1]["payload"]) if finished else {}
+        last_state = require_object(payload.get("state") or {})
+        findings = require_list(last_state.get("findings") or [])
         if len(findings) > FINDINGS_CAP:
             raise AssertionError(f"findings={len(findings)} 超过封顶 {FINDINGS_CAP}")
         print(f"  multi-agent 会话：压缩不适用，findings={len(findings)} ≤ {FINDINGS_CAP} ✓")

@@ -277,3 +277,24 @@ def test_projection_after_compaction_holds_invariants() -> None:
     assert [m for m in projected if m.get("role") == "user"] == [
         m for m in compacted if m.get("role") == "user"
     ]
+
+
+def test_orphan_tool_follows_dropped_assistant_on_compact() -> None:
+    """病态相邻性：属主 assistant 被删时孤儿 tool 一并删除，与投影清扫纪律对齐。"""
+    messages: list[ChatCompletionMessageParam] = [
+        system_message("你是排查助手。"),
+        user_message("开始排查"),
+        assistant_call("c0"),
+        user_message("补充一句"),
+        tool_message("c0", big_result()),
+        assistant_call("c1"),
+        tool_message("c1", big_result(record_id="pay_bg_001_0001")),
+        assistant_call("c2"),
+        tool_message("c2", big_result(record_id="pay_bg_001_0002")),
+        user_message("继续"),
+    ]
+    groups = select_compaction_range(as_objects(messages), 10, 1)
+    assert groups is not None
+    result, _, _ = compact_messages(as_objects(messages), groups, "摘要", 4000)
+    surviving = {str(m.get("tool_call_id")) for m in as_objects(result) if m.get("role") == "tool"}
+    assert surviving == {"c2"}  # c0 的孤儿 tool 随属主删除

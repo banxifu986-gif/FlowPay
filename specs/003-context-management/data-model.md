@@ -44,7 +44,7 @@ settings 对应键（FLOWPAY_ 前缀覆盖，loader 既有机制）：`context_c
 |---|---|
 | 首条 system | 永不动 |
 | 既有摘要（中段 system） | 永不动；text 作为 `<previous-summary>` 进合并 prompt |
-| 其他中段 system（briefing/DISPUTE） | 位于压缩区间内时随组压缩（其信息由摘要吸收；briefing 下轮由 Case 重建） |
+| 其他中段 system（briefing/DISPUTE） | **永不在压缩区间内**（可删组只含 assistant+tool，与投影同定义）；其信息不经摘要吸收——briefing 下轮由 Case 重建、DISPUTE 为单轮纠正 |
 | user 消息 | 永不动 |
 | assistant+尾随 tool 整组 | 可压缩单元（与投影可删组同定义）；最近 2 个完整交换 + 最后一段交换保留 |
 | 压缩产出 | 一条摘要 system 消息插在压缩区间起点 |

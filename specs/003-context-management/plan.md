@@ -39,7 +39,7 @@
 | workflows 不实现底层 | ✅ 不新增 SDK/存储操作 |
 | core 不依赖 workflows/router/bootstrap/scripts | ✅ compaction/clip_text 是 core/chat 纯函数；test_boundaries 强制 |
 | 公共方法类型声明完整，不退回 dict[str, Any] | ✅ 摘要信封/ContextPolicy/治理事件均强类型，供应商边界保留 JSON |
-| 公共导出只在 __init__.py | ✅ 新公共名经 core.chat __init__ 导出 |
+| 公共导出只在 __init__.py | ✅ 调用点从子模块直接 import（与 002 projection 同款惯例；core/chat/__init__.py 保持 docstring-only） |
 | 全局准则「最少代码」 | ✅ 审核砍除 token 触发线；slim/recall 推迟；不引 tokenizer |
 
 无违规。

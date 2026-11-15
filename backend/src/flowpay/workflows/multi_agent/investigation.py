@@ -225,6 +225,8 @@ def budget_report(
     shared: SharedTurn, worker: Literal["sql", "docs"], baseline: int, budget: int
 ) -> WorkerReport:
     """预算耗尽说明报告：按开工基线切片列出本轮已产出的查询结论（specs/003 FR-10）。"""
+    # 并行调查员都耗尽时各自说明报告会包含对方期间产出的条目：内容真实但归属
+    # 含混，合成节点多读一份冗余——接受此语义，不按 worker 过滤（specs/003 审核注记）。
     produced = shared.findings[baseline:]
     if produced:
         lines = "\n".join(f"- {f.tool} {f.target}：{f.digest}" for f in produced)
@@ -263,6 +265,9 @@ async def investigate(
             shared.seen.update(agent.seen)
         return {"reports": [budget_report(shared, worker, baseline, budget)]}
     except Exception as error:  # CancelledError 继承 BaseException，自然穿透。
+        # 故障路径也要并入已见编号：observe 过的编号经 findings 简报进入后续请求，
+        # 不并入则 synthesize 引用它们会被误拦一次（specs/003 FR-5 同源口径）。
+        shared.seen.update(agent.seen)
         return {"reports": [error_report(worker, objective, error, budget)]}
     finally:
         shared.usage_entries.extend(agent.usage_entries)
@@ -289,7 +294,12 @@ def plan_node(
             note_budget = 0
             if context_policy:
                 note_budget = max(0, context_policy.char_budget - len(content) - 2)
-            note = clip_text(briefing, note_budget) if context_policy else briefing
+            # 预算算尽退化为原文：简报承载跨轮结论，不按「正文全截只留标记」处理。
+            note = (
+                clip_text(briefing, note_budget)
+                if context_policy and note_budget > 0
+                else briefing
+            )
             content = f"{content}\n\n{note}"
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": SUPERVISOR_PROMPT},
@@ -500,7 +510,12 @@ def synthesize_node(
             note_budget = 0
         content = question
         if briefing := turn_briefing(shared, case_note):
-            note = clip_text(briefing, note_budget) if context_policy else briefing
+            # 预算算尽退化为原文：跨轮简报不被标记整段湮灭（与报告分支口径一致）。
+            note = (
+                clip_text(briefing, note_budget)
+                if context_policy and note_budget > 0
+                else briefing
+            )
             content = f"{content}\n\n{note}"
         content = f"{content}\n\n调查报告：\n{reports_block or '（没有调查报告）'}"
         messages: list[ChatCompletionMessageParam] = [

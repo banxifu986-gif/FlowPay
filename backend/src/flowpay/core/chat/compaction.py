@@ -17,7 +17,7 @@ from typing import cast
 from openai.types.chat import ChatCompletionMessageParam
 
 from flowpay.core.chat.record_ids import record_ids
-from flowpay.core.json import JsonObject, parse_json, require_object
+from flowpay.core.json import JsonObject, parse_json, require_list, require_object
 
 SUMMARY_KIND = "session_summary"
 # 压缩时保留的最近完整交换数；模块常量不进配置面（plan.md Design Summary）。
@@ -129,11 +129,11 @@ def _compact(
             found.extend(record_ids(content))
     # 旧信封携带的编号跨压缩链继承：其原始消息早已删除，不并入则历史编号断裂
     # （specs/003 research.md R-8 对策，对齐 pi 的文件清单累积）。
-    for index, message in enumerate(messages):
+    for message in messages:
         if is_summary_message(message):
             legacy = require_object(parse_json(str(message.get("content")))).get("record_ids")
-            if isinstance(legacy, list):
-                found.extend(item for item in legacy if isinstance(item, str))
+            if legacy is not None:
+                found.extend(item for item in require_list(legacy) if isinstance(item, str))
     text = _clip(summary_text, max(0, summary_budget))
     envelope = json.dumps(
         {
@@ -155,6 +155,26 @@ def _compact(
     ]
     position = sum(1 for index, _ in kept if index < insert_before)
     result = [message for _, message in kept]
+    # 病态排序（tool 消息与其 assistant 不相邻）下，删 assistant 会留下引用悬空的
+    # tool 消息；属主被删时把这些孤儿一并删除，与投影的清扫纪律对齐（projection
+    # contracts §4 条 6）。这类流本就不可发送，清扫是防御对称而非新语义。
+    dropped_owner_ids: set[str] = set()
+    for index in dropped:
+        message = messages[index]
+        if message.get("role") == "assistant":
+            calls = cast("list[JsonObject]", message.get("tool_calls") or [])
+            for call in calls:
+                call_id = call.get("id")
+                if isinstance(call_id, str):
+                    dropped_owner_ids.add(call_id)
+    result = [
+        message
+        for message in result
+        if not (
+            message.get("role") == "tool"
+            and message.get("tool_call_id") in dropped_owner_ids
+        )
+    ]
     result.insert(position, summary)
     return (
         cast("list[ChatCompletionMessageParam]", result),

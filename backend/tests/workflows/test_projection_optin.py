@@ -317,3 +317,43 @@ async def test_plan_and_synthesize_clipped_with_policy(tmp_path: Path) -> None:
     assert synthesize_content.startswith(question + "\n\n")
     assert "已截断" in synthesize_content  # 报告 25000 超剩余分配读取端预算
     assert "长" * 25000 not in synthesize_content
+
+
+async def test_briefing_survives_when_reports_exhaust_budget(tmp_path: Path) -> None:
+    """报告把均分份额吃满、简报预算算尽时：简报退化为原文而非标记湮灭（审核【1】）。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")], usage=USAGE),
+        completion(
+            calls=[
+                tasks_call(
+                    "t1",
+                    [
+                        {"kind": "docs", "objective": "查明重试策略A"},
+                        {"kind": "docs", "objective": "查明重试策略B"},
+                    ],
+                )
+            ],
+            usage=USAGE,
+        ),
+        completion(calls=[search_call("s1", "重试A")], usage=USAGE),
+        completion(calls=[read_call("r1", "RULE-1")], usage=USAGE),
+        completion("长" * 6000, usage=USAGE),
+        completion(calls=[search_call("s2", "重试B")], usage=USAGE),
+        completion(calls=[read_call("r2", "RULE-1")], usage=USAGE),
+        completion("长" * 6000, usage=USAGE),
+        completion("最终回答。", usage=USAGE),
+    ]
+    tight = ContextPolicy(char_budget=8000, tool_result_budget=100)
+    question = "查一下这笔支付"
+    saved_state: JsonObject = {
+        "findings": [
+            {"tool": "sql", "target": "payments account=acct_bg_001", "rows": 1, "digest": "3 行"}
+        ]
+    }
+    await run_troubleshoot(tmp_path, model, Search(), tight, question, saved_state)
+    synthesize_content = user_content(model, "调查报告：")
+    # 简报原文存活（非标记湮灭），报告照常截断。
+    assert "本会话已执行的查询与结论" in synthesize_content
+    assert "acct_bg_001" in synthesize_content
+    assert "已截断" in synthesize_content  # 报告超均分份额被截
