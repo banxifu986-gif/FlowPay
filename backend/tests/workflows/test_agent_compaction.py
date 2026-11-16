@@ -130,9 +130,7 @@ def as_objects(messages: object) -> list[JsonObject]:
 
 
 def summaries_in(messages: object) -> list[JsonObject]:
-    return [
-        m for m in as_objects(messages) if is_summary_message(m)
-    ]
+    return [m for m in as_objects(messages) if is_summary_message(m)]
 
 
 async def test_without_compaction_requests_are_untouched(tmp_path: Path) -> None:
@@ -219,6 +217,6 @@ async def test_compaction_failure_skips_silently(tmp_path: Path) -> None:
         assert len(model.requests) == 2
         assert "### 已确认事实" in json.dumps(model.requests[0]["messages"], ensure_ascii=False)
         assert summaries_in(model.requests[1]["messages"]) == []  # 正式请求无信封
-        assert agent.messages.messages[: -1] == expected_input(messages, question)
+        assert agent.messages.messages[:-1] == expected_input(messages, question)
         assert agent.messages.messages[-1]["role"] == "assistant"  # 本轮回答正常追加
         assert reply.text == "结论。"

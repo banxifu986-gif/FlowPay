@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # 在独立测试数据库运行后端与 HTTP/SSE 回归，避免使用网页会话做测试。
 import os
 import subprocess

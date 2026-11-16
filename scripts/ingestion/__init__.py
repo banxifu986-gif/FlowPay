@@ -1,1 +1,2 @@
+#!/usr/bin/env python3
 """FlowPay 发布文档的导入与验收，复用 core 的知识能力。"""

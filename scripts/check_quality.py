@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """统一检查后端基座；真实供应商验收单独执行，不隐式产生 API 用量。"""
 
 from __future__ import annotations

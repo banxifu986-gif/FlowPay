@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """仅依赖标准库的准备入口，可在项目依赖尚未安装时运行。"""
 
 from __future__ import annotations
@@ -125,7 +126,9 @@ def check_tools(env: dict[str, str], knowledge: bool, external: bool = False) ->
     """检查前置工具和 Docker 服务；不安装软件、不启动系统服务。"""
     good = True
     tools = (
-        ["uv", "node", "npm"] + ([] if external else ["docker"]) + (["ollama"] if knowledge else [])
+        ["uv", "node", "npm"]
+        + ([] if external else ["docker"])
+        + (["ollama"] if knowledge else [])
     )
     for tool in tools:
         if not shutil.which(tool, path=env.get("PATH")):
@@ -201,7 +204,9 @@ def perform(operation: str) -> None:
         if operation == "setup":
             env = prepare_env(ROOT / ".env", dict(os.environ))
             print("✓ 本地配置已准备，原有配置保留")
-            execute(["uv", "sync", "--project", "backend", "--frozen"], env, "同步后端依赖")
+            execute(
+                ["uv", "sync", "--project", "backend", "--frozen"], env, "同步后端依赖"
+            )
             marker = ROOT / "var/setup/dependencies.json"
             if not dependencies_ready():
                 marker.unlink(missing_ok=True)

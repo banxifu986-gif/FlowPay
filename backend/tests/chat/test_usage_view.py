@@ -14,9 +14,7 @@ def chat_completion(usage: CompletionUsage | None) -> ChatCompletion:
 def test_full_usage_is_extracted() -> None:
     """三个字段齐全时按值提取。"""
     entry = from_completion(
-        chat_completion(
-            CompletionUsage(prompt_tokens=120, completion_tokens=30, total_tokens=150)
-        )
+        chat_completion(CompletionUsage(prompt_tokens=120, completion_tokens=30, total_tokens=150))
     )
     assert entry == UsageEntry(120, 30, 150)
 

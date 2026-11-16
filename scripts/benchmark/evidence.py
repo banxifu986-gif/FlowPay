@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """把 benchmark 的 evidence ID 与运行时实际取到的片段、记录对齐。
 
 benchmark 和运行时各自分块，编号对不上：benchmark 把文档开头的纯标题节也算一块，
@@ -23,7 +24,9 @@ from flowpay.core.json import (
 from flowpay.dataset import require_dataset
 
 # 业务记录编号：与 manual-loop 工具返回的行对应，用于匹配 sql: / runtime: 两类 evidence。
-IDENTIFIER = re.compile(r"\b(?:acct|pay|evt|del|we|req|inc|att|cus|sub|inv|ref)_[A-Za-z0-9_]+\b")
+IDENTIFIER = re.compile(
+    r"\b(?:acct|pay|evt|del|we|req|inc|att|cus|sub|inv|ref)_[A-Za-z0-9_]+\b"
+)
 
 
 def identifiers_in(text: str) -> list[str]:

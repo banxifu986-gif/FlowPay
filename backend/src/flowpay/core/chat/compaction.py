@@ -179,10 +179,7 @@ def _compact(
     result = [
         message
         for message in result
-        if not (
-            message.get("role") == "tool"
-            and message.get("tool_call_id") in dropped_owner_ids
-        )
+        if not (message.get("role") == "tool" and message.get("tool_call_id") in dropped_owner_ids)
     ]
     result.insert(position, summary)
     return (
@@ -206,9 +203,7 @@ def summary_user_prompt(
         return SUMMARY_TEMPLATE.format(budget=char_budget)
 
 
-def _prompt(
-    messages: list[JsonObject], previous_summary: str | None, char_budget: int
-) -> str:
+def _prompt(messages: list[JsonObject], previous_summary: str | None, char_budget: int) -> str:
     lines: list[str] = []
     for message in messages:
         role = message.get("role")

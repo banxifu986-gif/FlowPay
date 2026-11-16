@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """冒烟事件分析：按轮聚合 model.request 体积与 usage，供投影阈值校准。
 
 用法：容器内 `python scripts/analyze_smoke.py <事件库目录> [session id]`。
@@ -36,7 +37,9 @@ def request_chars(payload: JsonObject) -> int:
     body = cast("JsonObject", request).get("body")
     if not isinstance(body, dict):
         return 0
-    return len(json.dumps(cast("JsonObject", body).get("messages", []), ensure_ascii=False))
+    return len(
+        json.dumps(cast("JsonObject", body).get("messages", []), ensure_ascii=False)
+    )
 
 
 def response_tokens(payload: JsonObject) -> tuple[int, int]:
@@ -66,12 +69,16 @@ def main() -> None:
         cast("str", row[0])
         for row in cast(
             "list[tuple[object]]",
-            conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall(),
         )
     ]
     table = "events" if "events" in tables else tables[0]
     sessions: dict[str, dict[str, RunStats]] = {}
-    rows = cast("list[tuple[object]]", conn.execute(f"SELECT data FROM {table}").fetchall())
+    rows = cast(
+        "list[tuple[object]]", conn.execute(f"SELECT data FROM {table}").fetchall()
+    )
     for row in rows:
         data = cast("str", row[0])
         event = require_object(parse_json(data))

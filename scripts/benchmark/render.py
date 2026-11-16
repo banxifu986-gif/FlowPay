@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """把 benchmark 的题目渲染成可读的 Markdown，按题型分文件，外加一份索引。
 
 默认读 resolved/resolved_blueprints.jsonl。它是 design 那份的超集：题面、标准答案、
@@ -142,7 +143,9 @@ def question(row: JsonObject) -> str:
             out += ["模拟用户手里的事实——**问到哪一类才说哪一类**：", ""]
             out += ["| 类别 | 助手问到这些词才披露 | 用户会说 |", "| --- | --- | --- |"]
             for fact in facts:
-                asked = "、".join(str(w) for w in items(fact, "disclose_when_asked_about"))
+                asked = "、".join(
+                    str(w) for w in items(fact, "disclose_when_asked_about")
+                )
                 out.append(
                     f"| `{fact.get('category')}` | {cell(asked)} | {cell(fact.get('user_value'))} |"
                 )
@@ -237,7 +240,9 @@ def question(row: JsonObject) -> str:
             )
         if trajectory:
             out += ["查到的实例事实：", ""]
-            out += [f"- `{t.get('selector_alias')}` {t.get('text')}" for t in trajectory]
+            out += [
+                f"- `{t.get('selector_alias')}` {t.get('text')}" for t in trajectory
+            ]
             out.append("")
         if evidence:
             out += [f"证据 ID：{code_list(evidence)}", ""]
@@ -251,7 +256,9 @@ def index(rows: list[JsonObject], source: str, files: dict[str, str]) -> str:
     by_difficulty = Counter(str(r.get("difficulty")) for r in rows)
     by_split = Counter(str(r.get("split")) for r in rows)
     multi = sum(
-        1 for r in rows if mapping(r, "conversation").get("mode") == "progressive_disclosure"
+        1
+        for r in rows
+        if mapping(r, "conversation").get("mode") == "progressive_disclosure"
     )
 
     out = [
@@ -290,13 +297,17 @@ def index(rows: list[JsonObject], source: str, files: dict[str, str]) -> str:
         brief = text if len(text) <= 42 else text[:42] + "…"
         link = f"[{row.get('question_id')}]({files[kind]}#{str(row.get('question_id')).lower()})"
         label = TYPE_LABEL.get(kind, kind)
-        out.append(f"| {link} | {label} | {row.get('difficulty')} | {turns} | {cell(brief)} |")
+        out.append(
+            f"| {link} | {label} | {row.get('difficulty')} | {turns} | {cell(brief)} |"
+        )
     return "\n".join(out) + "\n"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="把 benchmark 题库渲染成 Markdown")
-    parser.add_argument("--dataset", help="数据集根目录，默认读 FLOWPAY_DATASET_ROOT 或 .env")
+    parser.add_argument(
+        "--dataset", help="数据集根目录，默认读 FLOWPAY_DATASET_ROOT 或 .env"
+    )
     parser.add_argument(
         "--source", choices=sorted(SOURCES), default="resolved", help="渲染哪一份题库"
     )
@@ -311,11 +322,15 @@ def main() -> None:
 
     dataset = dataset_root(given_dataset)
     rows = load(dataset / SOURCES[source])
-    rows.sort(key=lambda r: (TYPES.index(str(r["question_type"])), str(r["question_id"])))
+    rows.sort(
+        key=lambda r: (TYPES.index(str(r["question_type"])), str(r["question_id"]))
+    )
     if only:
         rows = [r for r in rows if r.get("question_type") == only]
 
-    out_dir = Path(given_out).expanduser() if given_out else dataset / "benchmark/readable"
+    out_dir = (
+        Path(given_out).expanduser() if given_out else dataset / "benchmark/readable"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     files = {kind: f"{i:02d}-{kind}.md" for i, kind in enumerate(TYPES, 1)}
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """dataset 模拟用户的门面：按需接上它的源码目录，并把动态事实收窄成 fact_id。
 
 复用 `flowpay_simulator.simulated_user` 的判定逻辑，不复制它。模拟器随数据集分发，
@@ -64,7 +65,9 @@ class SimulatedUser:
 
     def __init__(self, conversation: dict[str, object]) -> None:
         """绑定本题的对话剧本；每道题独立一个实例。"""
-        self.inner: User = simulator().DeterministicSimulatedUser(conversation=conversation)
+        self.inner: User = simulator().DeterministicSimulatedUser(
+            conversation=conversation
+        )
 
     def answer(self, question: str) -> tuple[str, list[str]]:
         """回答一次追问，返回回复正文与本次披露的 fact_id 列表。

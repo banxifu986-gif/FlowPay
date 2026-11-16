@@ -155,9 +155,7 @@ def test_compact_replaces_with_envelope() -> None:
     # 被删轮次的编号全部由代码提取（奇偶轮不同编号），排序去重。
     assert body["record_ids"] == [f"pay_bg_001_{i:04d}" for i in range(3)]
     objects = as_objects(result)
-    surviving_ids = {
-        str(m.get("tool_call_id")) for m in objects if m.get("role") == "tool"
-    }
+    surviving_ids = {str(m.get("tool_call_id")) for m in objects if m.get("role") == "tool"}
     assert surviving_ids == {"c3", "c4"}
     assert result[0] == messages[0] and result[-1] == messages[-1]
     assert all(m.get("role") == "user" for m in result if m.get("role") == "user")

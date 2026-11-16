@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """基础环境准备入口；项目依赖未安装时也能运行。"""
 
 import sys

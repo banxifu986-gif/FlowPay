@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # 确定性模拟适配器，用于复现流式、工具与错误场景，不调用外部模型。
 from __future__ import annotations
 
@@ -80,7 +81,9 @@ class ScriptedAdapter:
                     {
                         "index": 0,
                         "message": native,
-                        "finish_reason": "tool_calls" if native.get("tool_calls") else "stop",
+                        "finish_reason": "tool_calls"
+                        if native.get("tool_calls")
+                        else "stop",
                     }
                 )
             ],

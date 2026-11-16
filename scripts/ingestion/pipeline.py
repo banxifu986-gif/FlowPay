@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """文档构建与验收流程，所有嵌入和检索调用均绑定持久化 Run。"""
 
 from __future__ import annotations
@@ -69,7 +70,9 @@ class KnowledgePreparation:
         """核对 Ollama 部署并执行 build 或 verify；过程与结果写入当前 Run，失败上抛。"""
         _ = turn  # 构建对象由配置确定，运行输入仅用于记录任务名称。
         deployment = await ollama_identity(self.embedding)
-        await runtime.tracer.emit("knowledge.build.plan", to_json_object(self.corpus.summary()))
+        await runtime.tracer.emit(
+            "knowledge.build.plan", to_json_object(self.corpus.summary())
+        )
         await runtime.tracer.emit("embedding.deployment", to_json_object(deployment))
         client = EmbeddingClient(OpenAiEmbeddingModel(self.embedding), runtime.tracer)
         if self.operation == "build":
@@ -78,7 +81,9 @@ class KnowledgePreparation:
             result = await self.verify(client, runtime)
         if await ollama_identity(self.embedding) != deployment:
             raise RuntimeError("Model deployment changed during operation")
-        await runtime.tracer.emit("knowledge.preparation.result", to_json_object(result))
+        await runtime.tracer.emit(
+            "knowledge.preparation.result", to_json_object(result)
+        )
         return TurnResult(
             "知识构建完成" if self.operation == "build" else "知识验收通过",
             to_json_object(result),
@@ -108,13 +113,15 @@ class KnowledgePreparation:
                         doc_id=document.doc_id,
                         source_path=document.source_path,
                         chunk_count=len(chunks),
-                        source_sha256=corpus.build_config.document_sources[document.source_path],
+                        source_sha256=corpus.build_config.document_sources[
+                            document.source_path
+                        ],
                     )
                 ),
             )
-        embedded = await KnowledgeClient(self.builder, embedding, runtime.tracer).embed_pending(
-            corpus.collection_id
-        )
+        embedded = await KnowledgeClient(
+            self.builder, embedding, runtime.tracer
+        ).embed_pending(corpus.collection_id)
         # 发布前再次核对来源字节和模型 digest；变化时保留 building 集合供诊断。
         await asyncio.to_thread(self.verify_source_files)
         await ollama_identity(self.embedding)
@@ -149,11 +156,15 @@ class KnowledgePreparation:
     ) -> KnowledgeVerificationResult:
         """检验指定规则进入前列、引用可回查及空过滤结果，返回记录摘要；不评测聊天答案。"""
         corpus = self.corpus
-        collection = await asyncio.to_thread(self.reader.get_collection, corpus.collection_id)
-        if collection["status"] != "ready" or collection["build_config"] != to_json_object(
-            corpus.build_config
-        ):
-            raise ValueError("Published collection differs from the current preparation plan")
+        collection = await asyncio.to_thread(
+            self.reader.get_collection, corpus.collection_id
+        )
+        if collection["status"] != "ready" or collection[
+            "build_config"
+        ] != to_json_object(corpus.build_config):
+            raise ValueError(
+                "Published collection differs from the current preparation plan"
+            )
         if (
             collection["dataset_release_id"] != corpus.release_id
             or collection["dataset_manifest_sha256"] != corpus.canonical_manifest_sha256
@@ -175,7 +186,9 @@ class KnowledgePreparation:
                 if hit.source.doc_id == expected_id and expected_text in hit.text
             ]
             if not matches:
-                raise RuntimeError(f"Expected rule passage missing from top 3: {expected_id}")
+                raise RuntimeError(
+                    f"Expected rule passage missing from top 3: {expected_id}"
+                )
             hit = matches[0]
             lookup = await asyncio.to_thread(
                 self.reader.read_passage,
@@ -190,15 +203,23 @@ class KnowledgePreparation:
                 or lookup.passage.text != expected_chunk.content
             ):
                 raise RuntimeError("Passage round trip differs from source")
-            locator = TypeAdapter(MarkdownLocator).validate_python(lookup.passage.source.locator)
-            reconstructed = locator.prefix + original.content[locator.start_char : locator.end_char]
+            locator = TypeAdapter(MarkdownLocator).validate_python(
+                lookup.passage.source.locator
+            )
+            reconstructed = (
+                locator.prefix + original.content[locator.start_char : locator.end_char]
+            )
             if reconstructed != hit.text:
-                raise RuntimeError("Chunk locator does not identify the original excerpt")
+                raise RuntimeError(
+                    "Chunk locator does not identify the original excerpt"
+                )
             result = RetrievalCheckResult(
                 question=question,
                 expected_doc_id=expected_id,
                 top_hits=[
-                    RetrievalHitSummary(item.source.doc_id, item.source.chunk_no, item.score)
+                    RetrievalHitSummary(
+                        item.source.doc_id, item.source.chunk_no, item.score
+                    )
                     for item in hits
                 ],
                 evidence=lookup,

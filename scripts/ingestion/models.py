@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Markdown 知识准备的数据模型；通用知识库存储只接收它们序列化后的 JSON。"""
 
 from dataclasses import dataclass

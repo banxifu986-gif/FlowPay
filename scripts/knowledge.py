@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """业务知识准备：plan 检查输入，build 幂等构建，verify 检查真实检索与引用。"""
 
 import argparse
@@ -29,8 +30,12 @@ class Arguments(argparse.Namespace):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["plan", "build", "verify"])
-    parser.add_argument("--config", type=Path, default=ROOT / "backend/configs/local.toml")
-    parser.add_argument("--corpus", type=Path, default=ROOT / "backend/configs/knowledge.toml")
+    parser.add_argument(
+        "--config", type=Path, default=ROOT / "backend/configs/local.toml"
+    )
+    parser.add_argument(
+        "--corpus", type=Path, default=ROOT / "backend/configs/knowledge.toml"
+    )
     args = parser.parse_args(namespace=Arguments())
     result = asyncio.run(
         run_preparation(

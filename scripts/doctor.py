@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """只读检查本地环境，不安装依赖、不调用聊天模型。"""
 
 import sys

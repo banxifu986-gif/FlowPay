@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """驱动多轮题：判断助手是不是在追问，再决定模拟用户披露什么。
 
 `dataset` 的模拟用户按关键词判断"问的是哪一类"，但它不负责判断"这一轮到底是不是追问"。
@@ -71,7 +72,9 @@ def asked_fields(events: Sequence[Event], run_id: str | None) -> list[str]:
         if payload.get("name") != "ask_user":
             continue
         arguments = require_object(parse_json(require_text(payload["arguments"])))
-        fields.extend(require_text(item) for item in require_list(arguments.get("missing") or []))
+        fields.extend(
+            require_text(item) for item in require_list(arguments.get("missing") or [])
+        )
     return fields
 
 
@@ -95,11 +98,15 @@ def detect(
     """
     if status == "waiting_user":
         fields = asked_fields(events, run_id)
-        mapped = sorted({FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY})
+        mapped = sorted(
+            {FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY}
+        )
         return "waiting_user", mapped or sorted(keyword_categories)
     fields = asked_fields(events, run_id)
     if fields:
-        mapped = sorted({FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY})
+        mapped = sorted(
+            {FIELD_CATEGORY[name] for name in fields if name in FIELD_CATEGORY}
+        )
         return "ask_user_tool", mapped
     if keyword_categories and looks_like_question(answer):
         return "text", sorted(keyword_categories)

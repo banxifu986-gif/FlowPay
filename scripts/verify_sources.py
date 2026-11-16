@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # 用真实数据快照验证只读查询，并对比访问前后的文件摘要。
 """Verify registered reads against the real dataset without changing it or calling a model."""
 
@@ -18,7 +19,9 @@ path = dataset / "generated/canonical/flowpay.sqlite"
 with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
     row = cast(
         tuple[str, str, str],
-        db.execute("SELECT account_id,environment,payment_id FROM payments LIMIT 1").fetchone(),
+        db.execute(
+            "SELECT account_id,environment,payment_id FROM payments LIMIT 1"
+        ).fetchone(),
     )
 account_id, environment, payment_id = row
 result = sources.sql(
@@ -30,7 +33,9 @@ assert len(result["rows"]) == 1
 for name in sources.policy.get("logs", {}):
     result = sources.logs(name, limit=2)
     assert result["rows"]
-    assert all("scenario_id" not in require_object(item["record"]) for item in result["rows"])
+    assert all(
+        "scenario_id" not in require_object(item["record"]) for item in result["rows"]
+    )
 try:
     sources.logs("audit/event_journal.jsonl")
 except ValueError:

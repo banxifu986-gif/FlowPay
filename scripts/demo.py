@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """启动确定性 HTTP/SSE 验收服务，不调用真实模型或业务工作流。"""
 
 import argparse
