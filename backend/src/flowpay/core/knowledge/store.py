@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import PurePosixPath
+from typing import LiteralString, cast
 
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -26,6 +27,35 @@ from .contracts import (
     PassageSource,
     PendingChunk,
 )
+
+# 文档元数据的缺省值（specs/005 US3）：005 之前构建的集合没有 audience 键，
+# 缺键按 external 处理，因此旧集合不必重建也能按可见范围过滤。只对这里登记的键
+# 生效，其余元数据过滤仍是严格包含匹配——过滤不会因为某篇文档少写字段而放宽。
+DEFAULT_METADATA: dict[str, str] = {"audience": "external"}
+
+
+def metadata_condition(filters: JsonObject | None) -> tuple[str, list[object]]:
+    """把元数据过滤渲染成 SQL 片段与绑定参数；登记过的键按缺省值兜底。
+
+    返回以 " AND " 开头的片段（没有条件时为空串）与对应绑定值；键名只来自调用方
+    传入的登记字段，值一律作为绑定参数，不拼接进 SQL。
+    """
+    if not filters:
+        return "", []
+    clauses: list[str] = []
+    values: list[object] = []
+    # 只有白名单里的键会被拼进 SQL 文本：遍历白名单而不是遍历调用方给的键，
+    # 未来新增缺省键也必须先登记，调用方无法把任意名字带进语句。
+    for key in sorted(DEFAULT_METADATA):
+        if key not in filters:
+            continue
+        clauses.append(f"COALESCE(d.metadata->>'{key}', %s) = %s")
+        values += [DEFAULT_METADATA[key], filters[key]]
+    strict = {key: value for key, value in filters.items() if key not in DEFAULT_METADATA}
+    if strict:
+        clauses.append("d.metadata @> %s::jsonb")
+        values.append(Jsonb(strict))
+    return " AND " + " AND ".join(clauses), values
 
 
 class PostgresVectorStore:
@@ -268,7 +298,8 @@ class PostgresVectorStore:
     ) -> list[Passage]:
         """在指定就绪集合内返回带来源信息的相似分块。
 
-        query 必须只有一个向量且模型身份与集合一致；filters 对文档 metadata 做包含匹配。
+        query 必须只有一个向量且模型身份与集合一致；filters 对文档 metadata 做过滤，
+        登记过缺省值的键（audience）按缺省值兜底，旧集合无需重建。
         score 为 1 减余弦距离，表示相似度而非答案置信度；同分按文档与块号稳定排序。
         返回结果只提供检索证据，不自动推断业务结论。
         """
@@ -276,6 +307,7 @@ class PostgresVectorStore:
             raise ValueError("Search needs one query vector and limit 1..100")
         if filters is not None:
             require_object(filters)
+        condition, filter_values = metadata_condition(filters)
         with self.pool.connection() as db:
             collection = self._read_collection(db, collection_id)
             if collection["status"] != "ready":
@@ -283,40 +315,54 @@ class PostgresVectorStore:
             if not same_vector_space(collection["build_config"]["embedding"], query.spec):
                 raise ValueError("Query embedding configuration differs from collection")
             validate_vector(query.vectors[0], collection["dimensions"])
-            rows = db.execute(
-                """
+            # 片段由模块常量拼出、值仍全部绑定参数；psycopg 只接受 LiteralString
+            # 形态的查询文本，这里的 cast 说明动态部分不会引入 SQL 文本。
+            statement = cast(
+                "LiteralString",
+                f"""
                 WITH candidates AS MATERIALIZED (
                   SELECT c.collection_id,c.doc_id,c.chunk_no,c.content,c.source_locator,c.embedding,
                          d.title,d.source_path,d.source_sha256,d.metadata
                   FROM chunks c JOIN documents d USING(collection_id,doc_id)
-                  WHERE c.collection_id=%s AND d.metadata @> %s::jsonb
+                  WHERE c.collection_id=%s{condition}
                 )
                 SELECT collection_id,doc_id,chunk_no,content,source_locator,title,source_path,
                        source_sha256,metadata,1-(embedding <=> %s::vector) AS score
                 FROM candidates ORDER BY score DESC,doc_id,chunk_no LIMIT %s
                 """,
-                (collection_id, Jsonb(filters or {}), json.dumps(query.vectors[0]), limit),
+            )
+            rows = db.execute(
+                statement,
+                (collection_id, *filter_values, json.dumps(query.vectors[0]), limit),
             ).fetchall()
             return [_passage(row) for row in rows]
 
     # 整篇读回只按文档编号排序，不重新计算相似度：这是"读完这一篇"，不是检索。
-    def read_document(self, collection_id: str, doc_id: str) -> list[Passage]:
+    def read_document(
+        self, collection_id: str, doc_id: str, filters: JsonObject | None = None
+    ) -> list[Passage]:
         """按文档编号返回它的全部分块，按块号排序；文档不存在时返回空列表。
 
+        filters 对文档 metadata 做过滤：不传时是内部账号的全量读回，商户则必须
+        带上可见范围，否则整篇读回会绕过检索层的 ACL；缺省值口径与检索一致。
         分块上限 1000 字符，单篇文档最多几个分块，因此整篇读回的代价是可预期的。
-        返回 Passage 而不是一整段文本，模型据此仍能按块号精确引用。
         """
+        if filters is not None:
+            require_object(filters)
+        condition, filter_values = metadata_condition(filters)
         with self.pool.connection() as db:
             collection = self._read_collection(db, collection_id)
             if collection["status"] != "ready":
                 raise ValueError("Collection is not ready")
-            rows = db.execute(
+            statement = cast(
+                "LiteralString",
                 "SELECT c.collection_id,c.doc_id,c.chunk_no,c.content,c.source_locator,"
                 + "d.title,d.source_path,d.source_sha256,d.metadata "
                 + "FROM chunks c JOIN documents d USING(collection_id,doc_id) "
-                + "WHERE c.collection_id=%s AND c.doc_id=%s ORDER BY c.chunk_no",
-                (collection_id, doc_id),
-            ).fetchall()
+                + f"WHERE c.collection_id=%s AND c.doc_id=%s{condition} "
+                + "ORDER BY c.chunk_no",
+            )
+            rows = db.execute(statement, (collection_id, doc_id, *filter_values)).fetchall()
             return [_passage(row, score=0.0) for row in rows]
 
     # 引用必须携带集合上下文；相同文档编号在不同集合中可能对应不同版本。

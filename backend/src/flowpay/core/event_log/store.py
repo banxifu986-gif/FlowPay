@@ -148,10 +148,15 @@ class EventStore(AsyncEventWriter):
                 )
             ]
 
-    def session_summaries(self) -> list[SessionSummary]:
-        """在数据库内选取摘要所需事件，不把模型原始请求和响应读回 Python。"""
+    def session_summaries(self, user_id: str | None = None) -> list[SessionSummary]:
+        """在数据库内选取摘要所需事件，不把模型原始请求和响应读回 Python。
+
+        user_id 为 None 时返回全部会话；给定时按 session.created 的 user_id 过滤，
+        商户因此不会在列表里看到别人的会话。
+        """
         with self.connect() as db:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT c.session_id, json_extract(c.data, '$.payload.workflow'),
                   COALESCE((SELECT substr(json_extract(u.data,'$.payload.content'),1,36)
                     FROM events u WHERE u.session_id=c.session_id AND u.type='message.user'
@@ -164,11 +169,16 @@ class EventStore(AsyncEventWriter):
                     ELSE 'interrupted' END FROM events r
                     WHERE r.session_id=c.session_id AND r.type IN
                     ('run.started','run.finished','run.failed','run.canceled','run.interrupted')
-                    ORDER BY r.seq DESC LIMIT 1), 'idle')
+                    ORDER BY r.seq DESC LIMIT 1), 'idle'),
+                  json_extract(c.data,'$.payload.user_id')
                 FROM events c JOIN events last ON last.session_id=c.session_id
                   AND last.seq=(SELECT max(e.seq) FROM events e WHERE e.session_id=c.session_id)
-                WHERE c.type='session.created' ORDER BY 4 DESC, c.session_id
-            """).fetchall()
+                WHERE c.type='session.created' AND (? IS NULL OR
+                  json_extract(c.data,'$.payload.user_id') = ?)
+                ORDER BY 4 DESC, c.session_id
+                """,
+                (user_id, user_id),
+            ).fetchall()
         return [
             SessionSummary(
                 id=sid,
@@ -177,9 +187,10 @@ class EventStore(AsyncEventWriter):
                 updated_at=updated,
                 last_seq=seq,
                 status=status,
+                user_id=owner,
             )
-            for sid, workflow, title, updated, seq, status in TypeAdapter(
-                list[tuple[str, str, str, str, int, SessionStatus]]
+            for sid, workflow, title, updated, seq, status, owner in TypeAdapter(
+                list[tuple[str, str, str, str, int, SessionStatus, str | None]]
             ).validate_python(rows, strict=True)
         ]
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """004 冒烟驱动：真实模型跑跨会话记忆链路（specs/004 US3/US8）。
 
 用法：compose 起栈（backend 带记忆键启动，见 specs/004 quickstart.md），容器内
@@ -27,11 +28,15 @@ from flowpay.core.event_log.types import Event
 from flowpay.core.json import require_list, require_object, require_text
 from pydantic import TypeAdapter
 
+from scripts.auth import AuthenticatedClient, add_arguments
+
 
 class Arguments(argparse.Namespace):
     """驱动参数：后端地址、单轮等待上限与事件库路径。"""
 
     url: str = "http://127.0.0.1:8000"
+    username: str = ""
+    password: str = ""
     timeout: float = 600.0
     store: str = "/app/var/live/sessions.sqlite"
 
@@ -216,9 +221,9 @@ def main() -> None:
     parser.add_argument("--url", default=Arguments.url)
     parser.add_argument("--timeout", type=float, default=Arguments.timeout)
     parser.add_argument("--store", default=Arguments.store)
+    add_arguments(parser)
     args = parser.parse_args(namespace=Arguments())
-    with httpx.Client(base_url=args.url, timeout=30) as client:
-        client.get("/api/health").raise_for_status()
+    with AuthenticatedClient(args.url, args.username, args.password) as client:
         store = EventStore(Path(args.store))
         sessions = [
             stage_a(client, store, args.timeout),

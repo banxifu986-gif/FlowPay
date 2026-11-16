@@ -57,8 +57,11 @@ class EventStoreProtocol(Protocol):
         """列出已保存会话的 ID，供启动恢复逐一检查未结束运行。"""
         ...
 
-    def session_summaries(self) -> list[SessionSummary]:
-        """返回会话目录需要的摘要，避免调用方为列表页遍历全部消息正文。"""
+    def session_summaries(self, user_id: str | None = None) -> list[SessionSummary]:
+        """返回会话目录需要的摘要，避免调用方为列表页遍历全部消息正文。
+
+        user_id 给定时只返回归属该主体的会话（商户列表）；None 表示全部（内部账号）。
+        """
         ...
 
 

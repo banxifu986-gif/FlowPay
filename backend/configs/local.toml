@@ -6,6 +6,9 @@ dataset_path = "../../dataset/data"
 knowledge_collection_id = "flowpay_docs_v1_qwen3_06b"
 # 业务阶段（multi-agent / manual-loop）按这份策略访问 dataset；只读、按操作名登记、表列白名单。
 sources_config = "../policies/sources.toml"
+# 预置账号文件（specs/005）：本地文件、git 忽略，由 scripts/accounts.py 生成。
+# 缺文件时服务启动即失败，不会以「无门禁」形态上线。
+accounts_path = "./accounts.toml"
 host = "127.0.0.1"
 port = 8000
 

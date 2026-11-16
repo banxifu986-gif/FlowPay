@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from flowpay.core.agent.trace import Tracer
+from flowpay.core.errors import error_summary
 from flowpay.core.llm.embedding import EmbeddingClient
 
 from .contracts import MemoryNote, RecalledNote
 from .store import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 # 语义兜底的最低余弦分数（试点值，真机校准后回填 specs/004 quickstart.md）。
 RECALL_SEMANTIC_THRESHOLD = 0.35
@@ -25,12 +29,18 @@ class TracedMemoryRecall:
         self,
         store: MemoryStore,
         tracer: Tracer,
+        owner: str,
         embedder: EmbeddingClient | None = None,
         semantic_limit: int = 0,
     ):
-        """保存存储、本轮追踪与可选嵌入客户端；semantic_limit=0 时不发生嵌入调用。"""
+        """保存存储、本轮追踪、记忆归属与可选嵌入客户端。
+
+        owner 在构造时绑定：召回、语义兜底与淘汰都只能看见同一商户的笔记（specs/005 US4）；
+        semantic_limit=0 时不发生嵌入调用。
+        """
         self._store: MemoryStore = store
         self._tracer: Tracer = tracer
+        self._owner: str = owner
         self._embedder: EmbeddingClient | None = embedder
         self._semantic_limit: int = semantic_limit
 
@@ -41,7 +51,9 @@ class TracedMemoryRecall:
         """
         normalized = sorted({key.casefold() for key in keys if key.strip()})
         try:
-            notes = await asyncio.to_thread(self._store.match_keys, normalized, limit=limit)
+            notes = await asyncio.to_thread(
+                self._store.match_keys, self._owner, normalized, limit=limit
+            )
             matched = "key" if notes else "none"
             if not notes and self._embedder is not None and self._semantic_limit > 0:
                 scored = await self._semantic(query)
@@ -57,10 +69,8 @@ class TracedMemoryRecall:
             )
             return [_recalled(note) for note in notes]
         except Exception as error:
-            await self._safe_emit(
-                "memory.recall_failed",
-                {"error_type": type(error).__name__, "message": str(error)},
-            )
+            logger.exception("Memory recall failed")
+            await self._safe_emit("memory.recall_failed", error_summary(error))
             return []
 
     async def _semantic(self, query: str) -> list[tuple[MemoryNote, float]]:
@@ -69,7 +79,7 @@ class TracedMemoryRecall:
         batch = await self._embedder.embed([query])
         vector = batch.vectors[0]
         return await asyncio.to_thread(
-            self._store.search_semantic, vector, limit=self._semantic_limit
+            self._store.search_semantic, vector, self._owner, limit=self._semantic_limit
         )
 
     async def _safe_emit(self, kind: str, payload: dict[str, object]) -> None:

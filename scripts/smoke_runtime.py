@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # 通过 HTTP 和 SSE 验证会话、追问、断线回放、取消与继续。
 """Exercise a running backend, including SSE replay after a simulated disconnect."""
 
@@ -7,25 +8,28 @@ import argparse
 import json
 import time
 
-import httpx
 from flowpay.core.chat.types import SessionView
 from flowpay.core.event_log.types import Event
 from flowpay.core.execution.types import TurnRecord
 from pydantic import TypeAdapter
+
+from scripts.auth import AuthenticatedClient, add_arguments
 
 
 class Arguments(argparse.Namespace):
     """本命令解析后的参数类型，供调用入口读取。"""
 
     url: str = "http://127.0.0.1:8000"
+    username: str = ""
+    password: str = ""
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8000")
+    add_arguments(parser)
     args = parser.parse_args(namespace=Arguments())
-    with httpx.Client(base_url=args.url, timeout=30) as client:
-        client.get("/api/health").raise_for_status()
+    with AuthenticatedClient(args.url, args.username, args.password) as client:
         created = client.post("/api/sessions", json={})
         created.raise_for_status()
         sid = TypeAdapter(SessionView).validate_json(created.content)["id"]
@@ -43,7 +47,9 @@ def main():
 
         def wait() -> SessionView:
             for _ in range(600):
-                result = TypeAdapter(SessionView).validate_json(client.get(base).content)
+                result = TypeAdapter(SessionView).validate_json(
+                    client.get(base).content
+                )
                 if result["status"] != "running":
                     return result
                 time.sleep(0.05)
@@ -68,13 +74,17 @@ def main():
         ) as response:
             for line in response.iter_lines():
                 if line.startswith("data: "):
-                    assert TypeAdapter(Event).validate_json(line[6:])["seq"] == cursor + 1
+                    assert (
+                        TypeAdapter(Event).validate_json(line[6:])["seq"] == cursor + 1
+                    )
                     break
         send("smoke-answer", "补充信息")
         final = wait()
         assert final["status"] == "completed"
         assert len(final["messages"]) == 4
-        events = TypeAdapter(list[Event]).validate_json(client.get(base + "/events").content)
+        events = TypeAdapter(list[Event]).validate_json(
+            client.get(base + "/events").content
+        )
         exported = [
             TypeAdapter(Event).validate_json(line)
             for line in client.get(base + "/export").text.splitlines()

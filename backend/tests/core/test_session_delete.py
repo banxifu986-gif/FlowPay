@@ -16,7 +16,9 @@ from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
 from flowpay.core.http import create_app
 from flowpay.core.json import parse_json, require_object, require_text
+from tests.core import auth_fixture
 from tests.core.fixtures import FixtureWorkflow
+from tests.core.principals import INTERNAL
 
 
 class WaitingWorkflow:
@@ -39,20 +41,22 @@ async def test_batch_delete_running_guard_and_no_revival(tmp_path: Path) -> None
     store = EventStore(tmp_path / "sessions.sqlite")
     manager = SessionManager(store, WaitingWorkflow(), settings)
     try:
-        idle = (await manager.create_session())["id"]
-        busy = (await manager.create_session())["id"]
-        keep = (await manager.create_session())["id"]
-        await manager.submit_message(busy, "request", "hello")
+        idle = (await manager.create_session(INTERNAL))["id"]
+        busy = (await manager.create_session(INTERNAL))["id"]
+        keep = (await manager.create_session(INTERNAL))["id"]
+        await manager.submit_message(busy, "request", "hello", INTERNAL)
         with pytest.raises(Conflict, match="Stop running"):
-            await manager.delete_sessions([idle, busy])
+            await manager.delete_sessions([idle, busy], INTERNAL)
         assert set(store.session_ids()) == {idle, busy, keep}
-        await manager.cancel_run(busy)
-        assert await manager.delete_sessions([busy, idle, idle, "missing"]) == sorted([busy, idle])
+        await manager.cancel_run(busy, INTERNAL)
+        assert await manager.delete_sessions([busy, idle, idle, "missing"], INTERNAL) == sorted(
+            [busy, idle]
+        )
         assert store.read(busy) == [] and store.read(idle) == []
         assert store.session_ids() == [keep]
-        assert await manager.delete_sessions([busy]) == []
+        assert await manager.delete_sessions([busy], INTERNAL) == []
         with pytest.raises(SessionNotFound):
-            await manager.submit_message(busy, "retry", "cannot revive")
+            await manager.submit_message(busy, "retry", "cannot revive", INTERNAL)
         reopened = EventStore(tmp_path / "sessions.sqlite")
         assert reopened.session_ids() == [keep]
     finally:
@@ -62,7 +66,9 @@ async def test_batch_delete_running_guard_and_no_revival(tmp_path: Path) -> None
 def test_delete_http_contract(tmp_path: Path) -> None:
     """单删和批删均返回实际 ID；读、导出、续跑已删除会话均不可访问。"""
     settings = Settings(tmp_path, tmp_path)
-    with TestClient(create_app(settings, FixtureWorkflow(settings))) as client:
+    auth = auth_fixture.authenticator(tmp_path)
+    with TestClient(create_app(settings, FixtureWorkflow(settings), auth)) as client:
+        client.headers.update(auth_fixture.headers(auth))
         ids = [client.post("/api/sessions").json()["id"] for _ in range(3)]
         first = client.delete(f"/api/sessions/{ids[0]}")
         assert first.status_code == 200
@@ -104,11 +110,11 @@ async def test_cancel_delete_waits_for_storage_before_unlock(tmp_path: Path) -> 
     settings = Settings(tmp_path, tmp_path)
     manager = SessionManager(SlowStore(tmp_path / "slow.sqlite"), WaitingWorkflow(), settings)
     try:
-        sid = (await manager.create_session())["id"]
-        deletion = asyncio.create_task(manager.delete_sessions([sid]))
+        sid = (await manager.create_session(INTERNAL))["id"]
+        deletion = asyncio.create_task(manager.delete_sessions([sid], INTERNAL))
         assert await asyncio.to_thread(entered.wait, 3)
         deletion.cancel()
-        submission = asyncio.create_task(manager.submit_message(sid, "late", "hello"))
+        submission = asyncio.create_task(manager.submit_message(sid, "late", "hello", INTERNAL))
         await asyncio.sleep(0)
         assert not submission.done()
         release.set()
@@ -132,8 +138,10 @@ def test_active_stream_closes_when_session_deleted(
     from flowpay.core.event_log.types import Event as TraceEvent
 
     settings = Settings(tmp_path, tmp_path)
-    app = create_app(settings, FixtureWorkflow(settings))
+    auth = auth_fixture.authenticator(tmp_path)
+    app = create_app(settings, FixtureWorkflow(settings), auth)
     with TestClient(app) as client:
+        client.headers.update(auth_fixture.headers(auth))
         sid = require_text(require_object(parse_json(client.post("/api/sessions").content))["id"])
         runtime = cast(SessionManager, app.state.manager)
         read = runtime.store.read

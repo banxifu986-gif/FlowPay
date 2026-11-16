@@ -21,7 +21,7 @@ DIGEST_LINE_CAP = 200
 
 
 def extract_note(
-    session_id: str, workflow: str, saved_state: JsonObject, answer: str
+    session_id: str, workflow: str, saved_state: JsonObject, answer: str, owner: str
 ) -> MemoryNote | None:
     """从检查点与最终回答抽取一条排查结论；没有实质进展时返回 None。
 
@@ -45,6 +45,7 @@ def extract_note(
         note_id=f"note_{uuid4().hex}",
         session_id=session_id,
         workflow=workflow,
+        owner=owner,
         created_at=datetime.now(UTC).isoformat(timespec="seconds"),
         keys=_keys(known, actions, findings, answer),
         conditions={"known": known},

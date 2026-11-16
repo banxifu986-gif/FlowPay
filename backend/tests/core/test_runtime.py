@@ -14,6 +14,7 @@ from flowpay.core.execution.manager import SessionManager
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
 from tests.core.fixtures import FixtureWorkflow
+from tests.core.principals import INTERNAL
 
 
 def manager(tmp_path: Path, delay: int = 0, workflow: Workflow | None = None) -> SessionManager:
@@ -27,31 +28,31 @@ async def settle(runtime: SessionManager, sid: str):
     task = runtime.tasks.get(sid)
     if task:
         await task
-    return await runtime.get_session(sid)
+    return await runtime.get_session(sid, INTERNAL)
 
 
 async def test_idempotency_and_conflicting_input(tmp_path: Path) -> None:
     runtime = manager(tmp_path, delay=50)
-    sid = (await runtime.create_session())["id"]
-    run = await runtime.submit_message(sid, "one", "question")
-    duplicate = await runtime.submit_message(sid, "one", "question")
+    sid = (await runtime.create_session(INTERNAL))["id"]
+    run = await runtime.submit_message(sid, "one", "question", INTERNAL)
+    duplicate = await runtime.submit_message(sid, "one", "question", INTERNAL)
     assert run["id"] == duplicate["id"]
     with pytest.raises(Conflict, match="different content"):
-        await runtime.submit_message(sid, "one", "different")
+        await runtime.submit_message(sid, "one", "different", INTERNAL)
     with pytest.raises(Conflict, match="active run"):
-        await runtime.submit_message(sid, "two", "question")
-    await runtime.cancel_run(sid)
-    assert (await runtime.get_session(sid))["status"] == "canceled"
+        await runtime.submit_message(sid, "two", "question", INTERNAL)
+    await runtime.cancel_run(sid, INTERNAL)
+    assert (await runtime.get_session(sid, INTERNAL))["status"] == "canceled"
     assert len([e for e in runtime.store.read(sid) if e["type"] == "message.user"]) == 1
 
 
 async def test_cancel_before_task_starts_then_resume(tmp_path: Path) -> None:
     runtime = manager(tmp_path)
-    sid = (await runtime.create_session())["id"]
-    await runtime.submit_message(sid, "one", "acct_demo production req_demo_503")
-    await runtime.cancel_run(sid)
-    assert (await runtime.get_session(sid))["status"] == "canceled"
-    await runtime.resume_run(sid, "resume")
+    sid = (await runtime.create_session(INTERNAL))["id"]
+    await runtime.submit_message(sid, "one", "acct_demo production req_demo_503", INTERNAL)
+    await runtime.cancel_run(sid, INTERNAL)
+    assert (await runtime.get_session(sid, INTERNAL))["status"] == "canceled"
+    await runtime.resume_run(sid, "resume", INTERNAL)
     final = await settle(runtime, sid)
     assert final["status"] == "completed"
     assert len([m for m in final["messages"] if m["role"] == "user"]) == 1
@@ -60,7 +61,7 @@ async def test_cancel_before_task_starts_then_resume(tmp_path: Path) -> None:
 
 async def test_restart_marks_orphan_run_and_preserves_history(tmp_path: Path) -> None:
     runtime = manager(tmp_path)
-    sid = (await runtime.create_session())["id"]
+    sid = (await runtime.create_session(INTERNAL))["id"]
     runtime.store.append(
         sid,
         [
@@ -82,8 +83,8 @@ async def test_restart_marks_orphan_run_and_preserves_history(tmp_path: Path) ->
     )
     reopened = manager(tmp_path)
     await reopened.recover()
-    assert (await reopened.get_session(sid))["status"] == "interrupted"
-    await reopened.resume_run(sid, "two")
+    assert (await reopened.get_session(sid, INTERNAL))["status"] == "interrupted"
+    await reopened.resume_run(sid, "two", INTERNAL)
     final = await settle(reopened, sid)
     assert final["status"] == "waiting_user"
     assert final["runs"][-1].get("resumed_from") == "orphan"
@@ -96,27 +97,27 @@ async def test_errors_recorded_and_explicit_retry(
     tmp_path: Path, flag: str, event_type: str
 ) -> None:
     runtime = manager(tmp_path)
-    sid = (await runtime.create_session())["id"]
-    await runtime.submit_message(sid, "one", f"acct_demo production req_demo_503 {flag}")
+    sid = (await runtime.create_session(INTERNAL))["id"]
+    await runtime.submit_message(sid, "one", f"acct_demo production req_demo_503 {flag}", INTERNAL)
     assert (await settle(runtime, sid))["status"] == "failed"
     assert any(e["type"] == event_type for e in runtime.store.read(sid))
-    await runtime.resume_run(sid, "retry")
+    await runtime.resume_run(sid, "retry", INTERNAL)
     assert (await settle(runtime, sid))["status"] == "completed"
 
 
 async def test_version_mismatch_rejected(tmp_path: Path) -> None:
     runtime = manager(tmp_path)
-    sid = (await runtime.create_session())["id"]
+    sid = (await runtime.create_session(INTERNAL))["id"]
     runtime.workflow.version = "2"
     with pytest.raises(Conflict, match="version"):
-        await runtime.submit_message(sid, "one", "question")
+        await runtime.submit_message(sid, "one", "question", INTERNAL)
 
 
 async def test_storage_failure_disables_new_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = manager(tmp_path)
-    sid = (await runtime.create_session())["id"]
+    sid = (await runtime.create_session(INTERNAL))["id"]
     original = runtime.store.append
 
     def fail_on_calls(
@@ -131,20 +132,20 @@ async def test_storage_failure_disables_new_runs(
         return original(session_id, items, run_id, call_id, parent_call_id)
 
     monkeypatch.setattr(runtime.store, "append", fail_on_calls)
-    await runtime.submit_message(sid, "one", "question")
+    await runtime.submit_message(sid, "one", "question", INTERNAL)
     await settle(runtime, sid)
     assert runtime.storage_error
     with pytest.raises(Conflict, match="unavailable"):
-        await runtime.submit_message(sid, "two", "question")
+        await runtime.submit_message(sid, "two", "question", INTERNAL)
 
 
 async def test_shutdown_preserves_interrupted_status(tmp_path: Path) -> None:
     runtime = manager(tmp_path, delay=100)
-    sid = (await runtime.create_session())["id"]
-    await runtime.submit_message(sid, "one", "question")
+    sid = (await runtime.create_session(INTERNAL))["id"]
+    await runtime.submit_message(sid, "one", "question", INTERNAL)
     await asyncio.sleep(0.02)
     await runtime.shutdown()
-    assert (await runtime.get_session(sid))["status"] == "interrupted"
+    assert (await runtime.get_session(sid, INTERNAL))["status"] == "interrupted"
     assert not runtime.tasks
 
 
@@ -159,8 +160,8 @@ async def test_generic_workflow_does_not_need_demo_tools(tmp_path: Path) -> None
             return TurnResult("echo", {"opaque": ["arbitrary", 1]})
 
     runtime = manager(tmp_path, workflow=Echo())
-    sid = (await runtime.create_session())["id"]
-    await runtime.submit_message(sid, "one", "hello")
+    sid = (await runtime.create_session(INTERNAL))["id"]
+    await runtime.submit_message(sid, "one", "hello", INTERNAL)
     final = await settle(runtime, sid)
     assert final["state"] == {"opaque": ["arbitrary", 1]}
     assert any(e["type"] == "custom.event" for e in runtime.store.read(sid))
@@ -172,7 +173,7 @@ async def test_submission_canceled_after_commit_remains_resumable(
     import threading
 
     runtime = manager(tmp_path)
-    sid = (await runtime.create_session())["id"]
+    sid = (await runtime.create_session(INTERNAL))["id"]
     committed = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
@@ -193,7 +194,7 @@ async def test_submission_canceled_after_commit_remains_resumable(
         return result
 
     monkeypatch.setattr(runtime.store, "append", delayed_append)
-    submit = asyncio.create_task(runtime.submit_message(sid, "one", "question"))
+    submit = asyncio.create_task(runtime.submit_message(sid, "one", "question", INTERNAL))
     try:
         await asyncio.wait_for(committed.wait(), 2)
         submit.cancel()
@@ -201,7 +202,7 @@ async def test_submission_canceled_after_commit_remains_resumable(
         release.set()
     with pytest.raises(asyncio.CancelledError):
         await submit
-    assert (await runtime.get_session(sid))["status"] == "interrupted"
+    assert (await runtime.get_session(sid, INTERNAL))["status"] == "interrupted"
     assert not runtime.tasks
-    await runtime.resume_run(sid, "continue")
+    await runtime.resume_run(sid, "continue", INTERNAL)
     assert (await settle(runtime, sid))["status"] == "waiting_user"

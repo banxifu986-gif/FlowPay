@@ -14,6 +14,7 @@ from flowpay.core.event_log.types import Event
 from flowpay.core.execution.manager import SessionManager
 from flowpay.core.http import create_app
 from flowpay.core.json import parse_json, require_object
+from tests.core import auth_fixture
 from tests.core.fixtures import FixtureWorkflow
 
 
@@ -44,7 +45,9 @@ def test_configuration_is_relative_to_file_and_does_not_capture_key(
 
 def test_http_lifecycle_export_and_restart(tmp_path: Path) -> None:
     settings = Settings(tmp_path, tmp_path / "dataset", mock_delay_ms=0)
-    with TestClient(create_app(settings, FixtureWorkflow(settings))) as client:
+    auth = auth_fixture.authenticator(tmp_path)
+    with TestClient(create_app(settings, FixtureWorkflow(settings), auth)) as client:
+        client.headers.update(auth_fixture.headers(auth))
         assert client.get("/api/health").status_code == 200
         assert (
             require_object(require_object(parse_json(client.get("/api/meta").content))["workflow"])[
@@ -108,7 +111,8 @@ def test_http_lifecycle_export_and_restart(tmp_path: Path) -> None:
             == 422
         )
         assert client.get(f"/api/sessions/{sid}/events?after=-1").status_code == 422
-    with TestClient(create_app(settings, FixtureWorkflow(settings))) as client:
+    with TestClient(create_app(settings, FixtureWorkflow(settings), auth)) as client:
+        client.headers.update(auth_fixture.headers(auth))
         assert (
             TypeAdapter(SessionView).validate_json(client.get(f"/api/sessions/{sid}").content)[
                 "messages"
@@ -119,9 +123,10 @@ def test_http_lifecycle_export_and_restart(tmp_path: Path) -> None:
 
 def test_second_backend_cannot_open_same_runtime(tmp_path: Path) -> None:
     settings = Settings(tmp_path, tmp_path / "dataset", mock_delay_ms=0)
-    with TestClient(create_app(settings, FixtureWorkflow(settings))):
+    auth = auth_fixture.authenticator(tmp_path)
+    with TestClient(create_app(settings, FixtureWorkflow(settings), auth)):
         with pytest.raises(RuntimeError, match="already has"):
-            with TestClient(create_app(settings, FixtureWorkflow(settings))):
+            with TestClient(create_app(settings, FixtureWorkflow(settings), auth)):
                 pass
 
 
@@ -144,8 +149,10 @@ def test_internal_key_error_is_not_reported_as_missing_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = Settings(tmp_path, tmp_path / "dataset")
-    app = create_app(settings, FixtureWorkflow(settings))
+    auth = auth_fixture.authenticator(tmp_path)
+    app = create_app(settings, FixtureWorkflow(settings), auth)
     with TestClient(app, raise_server_exceptions=False) as client:
+        client.headers.update(auth_fixture.headers(auth))
 
         async def broken_listing():
             raise KeyError("internal field")

@@ -17,6 +17,10 @@ from .reader import SourceResult
 
 SqlQuery = Callable[[str, JsonObject, JsonObject], Awaitable[SourceResult]]
 
+# 服务端强制的 scope 列值（specs/005）：会话主体绑定的账户在工具边界覆盖对话给的
+# 同名值。键是登记文件里的 scope 列名，因此 core 仍然不知道业务字段。
+ScopeOverrides = Mapping[str, str]
+
 
 class LogQuery(Protocol):
     """日志查询入口；阶段传入 AgentRuntime.query_logs。"""
@@ -62,12 +66,27 @@ class LogToolSpec:
 
 
 def sql_tool(
-    spec: SqlToolSpec, query: SqlQuery, values: Mapping[str, Sequence[str]] | None = None
+    spec: SqlToolSpec,
+    query: SqlQuery,
+    values: Mapping[str, Sequence[str]] | None = None,
+    scope_overrides: ScopeOverrides | None = None,
 ) -> Tool:
-    """把一个登记关系变成工具；条件名取自登记字段，值始终作为绑定参数传入。"""
+    """把一个登记关系变成工具；条件名取自登记字段，值始终作为绑定参数传入。
+
+    scope_overrides 是服务端强制的列值：先取覆盖值再退回对话值，因此模型与用户
+    都改不了已绑定的账户，事件里记录的也是覆盖后的实际条件。
+    """
+
+    def scope_of(arguments: JsonObject) -> JsonObject:
+        """按登记顺序取 scope 值；被强制覆盖的列一律使用服务端值。"""
+        overrides = scope_overrides or {}
+        return {
+            name: overrides[name] if name in overrides else require_text(arguments[name])
+            for name in spec.scope
+        }
 
     async def run(arguments: JsonObject) -> JsonObject:
-        scope: JsonObject = {n: require_text(arguments[n]) for n in spec.scope}
+        scope: JsonObject = scope_of(arguments)
         filters: JsonObject = {
             n: require_text(arguments[n]) for n in spec.filters if n in arguments
         }
@@ -83,14 +102,24 @@ def sql_tool(
 
 
 def log_tool(
-    spec: LogToolSpec, query: LogQuery, values: Mapping[str, Sequence[str]] | None = None
+    spec: LogToolSpec,
+    query: LogQuery,
+    values: Mapping[str, Sequence[str]] | None = None,
+    scope_overrides: ScopeOverrides | None = None,
 ) -> Tool:
-    """把一个登记的日志来源变成工具；过滤条件可以只给一部分。"""
+    """把一个登记的日志来源变成工具；过滤条件可以只给一部分。
+
+    scope_overrides 与 SQL 工具同义：日志来源里被声明为隔离列的字段由服务端决定，
+    因此强制值既是过滤器也是事件里记录的实际条件。
+    """
 
     async def run(arguments: JsonObject) -> JsonObject:
         filters: JsonObject = {
             k: require_text(v) for k, v in arguments.items() if k in spec.filters
         }
+        for name, value in (scope_overrides or {}).items():
+            if name in spec.filters:
+                filters[name] = value
         if not filters:
             return {"rows": [], "truncated": False, "notice": "至少给出一个过滤条件。"}
         window = {k: require_text(arguments[k]) for k in ("start", "end") if k in arguments}

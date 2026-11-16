@@ -2,6 +2,7 @@
 
 import os
 
+from flowpay.core.auth import AccountPolicy, TokenAuthenticator
 from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.config import Settings
 from flowpay.core.execution.contracts import Workflow
@@ -9,6 +10,19 @@ from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.core.memory.contracts import MemoryPolicy
 from flowpay.router import create_stage, resolve_stage
+
+
+def create_authenticator(settings: Settings) -> TokenAuthenticator:
+    """装配登录门禁：账号文件与令牌密钥缺一不可，在服务启动前失败而不是运行到一半。
+
+    密钥只从环境变量读取，值既不进配置快照也不落日志；有效期由账号文件给出。
+    """
+    if settings.accounts_path is None or not settings.accounts_path.is_file():
+        raise ValueError("Authentication requires accounts_path pointing at the accounts file")
+    secret = os.environ.get(settings.auth_token_secret_env)
+    if not secret:
+        raise ValueError(f"Missing environment variable: {settings.auth_token_secret_env}")
+    return TokenAuthenticator(AccountPolicy.from_file(settings.accounts_path), secret)
 
 
 def create_workflow(settings: Settings) -> Workflow:

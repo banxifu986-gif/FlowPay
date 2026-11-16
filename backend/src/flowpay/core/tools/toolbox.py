@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from time import perf_counter
 from typing import cast
@@ -11,10 +12,13 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from openai.types.chat import ChatCompletionMessageFunctionToolCall, ChatCompletionToolParam
 
+from flowpay.core.errors import error_summary
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.json import JsonObject, parse_json, require_object
 
 from .contracts import Tool, ToolInputError
+
+logger = logging.getLogger(__name__)
 
 
 class Toolbox:
@@ -81,11 +85,10 @@ class Toolbox:
             await self.tracer.emit("tool.canceled", {"name": name}, call_id)
             raise
         except Exception as error:
-            await self.tracer.emit(
-                "tool.error",
-                {"name": name, "error_type": type(error).__name__, "message": str(error)},
-                call_id,
-            )
+            # 参数错误是模型可纠正的预期路径，不刷服务端异常栈；其余错误留完整记录。
+            if not isinstance(error, ToolInputError):
+                logger.exception("Tool failed: %s", name)
+            await self.tracer.emit("tool.error", {"name": name, **error_summary(error)}, call_id)
             raise
 
     async def _dispatch(self, name: str, arguments: JsonObject | str) -> JsonObject:

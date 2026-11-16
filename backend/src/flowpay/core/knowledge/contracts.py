@@ -146,8 +146,10 @@ class VectorStore(Protocol):
         """在指定集合内用查询向量排序并过滤元数据，返回最多 limit 条带来源的候选。"""
         ...
 
-    def read_document(self, collection_id: str, doc_id: str) -> list[Passage]:
-        """按文档编号返回它的全部分块，按块号排序；文档不存在时返回空列表。"""
+    def read_document(
+        self, collection_id: str, doc_id: str, filters: JsonObject | None = None
+    ) -> list[Passage]:
+        """按文档编号返回它的全部分块，按块号排序；filters 收窄可见的文档。"""
         ...
 
     def read_passage(self, collection_id: str, doc_id: str, chunk_no: int) -> PassageLookup:
@@ -172,6 +174,8 @@ class DocumentRetriever(Protocol):
         """检索固定集合并记录过程；失败和取消向上传播。"""
         ...
 
-    async def read_document(self, collection_id: str, doc_id: str) -> list[Passage]:
-        """整篇取回一份文档的全部分块并记录过程；文档不存在时返回空列表。"""
+    async def read_document(
+        self, collection_id: str, doc_id: str, filters: JsonObject | None = None
+    ) -> list[Passage]:
+        """整篇取回一份文档的全部分块并记录过程；filters 收窄可见的文档。"""
         ...

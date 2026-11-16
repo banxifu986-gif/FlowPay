@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """003 冒烟驱动：真实模型跑六轮长会话，核对 LLM 摘要式压缩契约（T013/T014）。
 
 用法：compose 起栈（backend 带治理键启动，见 specs/003 quickstart），容器内执行
@@ -30,11 +31,15 @@ from flowpay.core.json import (
 )
 from pydantic import TypeAdapter
 
+from scripts.auth import AuthenticatedClient, add_arguments
+
 
 class Arguments(argparse.Namespace):
     """驱动参数：后端地址、单轮等待上限与事件库路径。"""
 
     url: str = "http://127.0.0.1:8000"
+    username: str = ""
+    password: str = ""
     timeout: float = 600.0
     store: str = "/app/var/live/sessions.sqlite"
 
@@ -54,7 +59,9 @@ def wait_terminal(client: httpx.Client, sid: str, timeout: float) -> SessionView
     """轮询会话直到本轮终态；超过上限按超时失败处理。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        view = TypeAdapter(SessionView).validate_json(client.get(f"/api/sessions/{sid}").content)
+        view = TypeAdapter(SessionView).validate_json(
+            client.get(f"/api/sessions/{sid}").content
+        )
         if view["status"] != "running":
             return view
         time.sleep(1.0)
@@ -97,7 +104,9 @@ def analyze(events: list[Event]) -> None:
         payload = event["payload"]
         print(
             "  compacted: rounds={} before={} after={}".format(
-                payload.get("rounds"), payload.get("before_chars"), payload.get("after_chars")
+                payload.get("rounds"),
+                payload.get("before_chars"),
+                payload.get("after_chars"),
             )
         )
     for event in failed:
@@ -114,10 +123,16 @@ def analyze(events: list[Event]) -> None:
 
     requests = [e for e in events if e["type"] == "model.request"]
     sizes = [
-        len(json.dumps(require_object(e["payload"]).get("request") or {}, ensure_ascii=False))
+        len(
+            json.dumps(
+                require_object(e["payload"]).get("request") or {}, ensure_ascii=False
+            )
+        )
         for e in requests
     ]
-    print(f"=== model.request total: {len(requests)}; max chars={max(sizes) if sizes else 0}")
+    print(
+        f"=== model.request total: {len(requests)}; max chars={max(sizes) if sizes else 0}"
+    )
 
     # 每轮 run.finished 的检查点：体积曲线 + 信封编号完整性。
     finished = [e for e in events if e["type"] == "run.finished"]
@@ -137,7 +152,9 @@ def analyze(events: list[Event]) -> None:
         for item in messages:
             message = require_object(item)
             try:
-                body = require_object(parse_envelope(require_text(message.get("content"))))
+                body = require_object(
+                    parse_envelope(require_text(message.get("content")))
+                )
             except ValueError:
                 continue
             if body.get("kind") == "session_summary":
@@ -163,7 +180,9 @@ def analyze(events: list[Event]) -> None:
         findings = require_list(last_state.get("findings") or [])
         if len(findings) > FINDINGS_CAP:
             raise AssertionError(f"findings={len(findings)} 超过封顶 {FINDINGS_CAP}")
-        print(f"  multi-agent 会话：压缩不适用，findings={len(findings)} ≤ {FINDINGS_CAP} ✓")
+        print(
+            f"  multi-agent 会话：压缩不适用，findings={len(findings)} ≤ {FINDINGS_CAP} ✓"
+        )
     print("\ncompaction contract satisfied ✓")
 
 
@@ -178,9 +197,9 @@ def main() -> None:
     parser.add_argument("--url", default=Arguments.url)
     parser.add_argument("--timeout", type=float, default=Arguments.timeout)
     parser.add_argument("--store", default=Arguments.store)
+    add_arguments(parser)
     args = parser.parse_args(namespace=Arguments())
-    with httpx.Client(base_url=args.url, timeout=30) as client:
-        client.get("/api/health").raise_for_status()
+    with AuthenticatedClient(args.url, args.username, args.password) as client:
         sid, _ = run_turns(client, args.timeout)
     store = EventStore(Path(args.store))
     analyze(session_events(store, sid))

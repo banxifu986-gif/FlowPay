@@ -17,6 +17,7 @@ from flowpay.core.json import JsonObject, require_list, require_object
 from flowpay.core.llm.chat import ChunkSink
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.router import create_stage
+from tests.core.principals import INTERNAL
 
 from .fixtures import Model, Search, completion, grounded, search_call
 
@@ -66,10 +67,10 @@ async def test_model_can_repair_its_own_request(tmp_path: Path, stage: str, erro
     )
     model.responses = [bad, *successful_search()]
     try:
-        sid = (await manager.create_session())["id"]
-        await manager.submit_message(sid, "first", "HTTP 410")
+        sid = (await manager.create_session(INTERNAL))["id"]
+        await manager.submit_message(sid, "first", "HTTP 410", INTERNAL)
         await manager.tasks[sid]
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert view["status"] == "completed"
         assert len(search.queries) == 1
         feedback = require_list(model.requests[1]["messages"])
@@ -105,17 +106,17 @@ async def test_budget_is_per_turn_and_tool_history_survives(tmp_path: Path, stag
         grounded(),
     ]
     try:
-        sid = (await manager.create_session())["id"]
-        await manager.submit_message(sid, "first", "HTTP 410")
+        sid = (await manager.create_session(INTERNAL))["id"]
+        await manager.submit_message(sid, "first", "HTTP 410", INTERNAL)
         await manager.tasks[sid]
-        assert (await manager.get_session(sid))["status"] == "completed"
+        assert (await manager.get_session(sid, INTERNAL))["status"] == "completed"
         assert len(search.queries) == 3
         assert model.requests[-1]["tools"] == []
         model.responses = successful_search("next")
         next_request = len(model.requests)
-        await manager.submit_message(sid, "second", "再查一次")
+        await manager.submit_message(sid, "second", "再查一次", INTERNAL)
         await manager.tasks[sid]
-        assert (await manager.get_session(sid))["status"] == "completed"
+        assert (await manager.get_session(sid, INTERNAL))["status"] == "completed"
         assert len(search.queries) == 4
         assert model.requests[next_request]["tools"]
         assert "本轮工具预算已关闭" not in str(model.requests[next_request]["messages"])
@@ -162,10 +163,10 @@ async def test_cancel_after_success_keeps_previous_checkpoint(
     )
     model.responses = successful_search()
     try:
-        sid = (await manager.create_session())["id"]
-        await manager.submit_message(sid, "first", "HTTP 410")
+        sid = (await manager.create_session(INTERNAL))["id"]
+        await manager.submit_message(sid, "first", "HTTP 410", INTERNAL)
         await manager.tasks[sid]
-        saved = (await manager.get_session(sid))["state"]
+        saved = (await manager.get_session(sid, INTERNAL))["state"]
         entered = asyncio.Event()
 
         async def block(request: JsonObject, emit: ChunkSink) -> ChatCompletion:
@@ -176,10 +177,10 @@ async def test_cancel_after_success_keeps_previous_checkpoint(
             raise AssertionError("unreachable")
 
         monkeypatch.setattr(model, "invoke", block)
-        await manager.submit_message(sid, "second", "继续")
+        await manager.submit_message(sid, "second", "继续", INTERNAL)
         await asyncio.wait_for(entered.wait(), 3)
-        await manager.cancel_run(sid)
-        view = await manager.get_session(sid)
+        await manager.cancel_run(sid, INTERNAL)
+        view = await manager.get_session(sid, INTERNAL)
         assert view["status"] == "canceled" and view["state"] == saved
     finally:
         await manager.shutdown()
@@ -219,7 +220,7 @@ async def test_previous_workflow_version_requires_new_session(tmp_path: Path, st
     manager = SessionManager(store, workflow, settings)
     try:
         with pytest.raises(Conflict):
-            await manager.submit_message("old", "request", "继续")
+            await manager.submit_message("old", "request", "继续", INTERNAL)
         assert model.requests == []
     finally:
         await manager.shutdown()

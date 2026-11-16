@@ -125,13 +125,17 @@ class RuntimeResources:
             return None
         return EmbeddingClient(OpenAiEmbeddingModel(self.settings.embedding), tracer)
 
-    def memory_recall(self, tracer: Tracer) -> TracedMemoryRecall | None:
-        """为一轮运行装配带追踪的记忆召回；语义兜底仅在配置了嵌入时可用。"""
+    def memory_recall(self, tracer: Tracer, owner: str) -> TracedMemoryRecall | None:
+        """为一轮运行装配带追踪的记忆召回；owner 是商户账户，召回只在该 owner 内进行。
+
+        语义兜底仅在配置了嵌入时可用；内部账号由管理器直接传入 None（零记忆事件）。
+        """
         if self.memory_store is None or self.memory_policy is None:
             return None
         return TracedMemoryRecall(
             self.memory_store,
             tracer,
+            owner,
             self.memory_embedder(tracer),
             self.memory_policy.semantic_limit,
         )

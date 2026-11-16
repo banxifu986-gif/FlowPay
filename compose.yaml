@@ -73,6 +73,11 @@ services:
       FLOWPAY_KNOWLEDGE_DSN: postgresql://flowpay_knowledge_reader:${FLOWPAY_DB_PASSWORD:-flowpay_local}@postgres:5432/flowpay_knowledge
       FLOWPAY_KNOWLEDGE_BUILDER_DSN: postgresql://flowpay_knowledge_builder:${FLOWPAY_DB_PASSWORD:-flowpay_local}@postgres:5432/flowpay_knowledge
       FLOWPAY_KNOWLEDGE_ADMIN_DSN: postgresql://flowpay_admin:${FLOWPAY_DB_PASSWORD:-flowpay_local}@postgres:5432/flowpay_knowledge
+      # 登录门禁（specs/005）：账号文件由 scripts/accounts.py 生成，密钥来自 .env。
+      # 这里允许留空，让本地测试/冒烟不必先备密钥；后端启动时缺密钥或缺账号文件
+      # 都会失败（fail-fast），不会以无门禁形态运行。
+      FLOWPAY_ACCOUNTS_PATH: /app/backend/configs/accounts.toml
+      FLOWPAY_AUTH_TOKEN_SECRET: ${FLOWPAY_AUTH_TOKEN_SECRET:-}
       # database.py setup 建 reader 与 builder 角色时用同一个口令。
       FLOWPAY_DB_PASSWORD: ${FLOWPAY_DB_PASSWORD:-flowpay_local}
     volumes:

@@ -57,7 +57,8 @@ async def test_projection_on_replaces_oversized_tool_result() -> None:
     model = Model()
     agent = agent_with_tool_exchange(
         # 整体预算放宽到替换后的总体积之上，只让单条工具预算触发占位路径。
-        model, ContextPolicy(char_budget=2000, tool_result_budget=100)
+        model,
+        ContextPolicy(char_budget=2000, tool_result_budget=100),
     )
     await agent.think()
     request_messages = require_list(require_object(model.requests[0])["messages"])

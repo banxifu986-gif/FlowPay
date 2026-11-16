@@ -8,7 +8,8 @@ runtime（追踪出口、模型调用入口）与 SharedTurn 都是每轮创建�
 """
 
 # langgraph 的 add_node/compile/ainvoke 重载标注不完整，本文件关闭该检查。
-# pyright: reportUnknownMemberType=false
+# langgraph.graph 未随分发包提供 stub（或不在类型的搜索路径里），也无法补齐。
+# pyright: reportUnknownMemberType=false, reportMissingTypeStubs=false
 
 from __future__ import annotations
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import uvicorn
 
-from flowpay.bootstrap import create_workflow
+from flowpay.bootstrap import create_authenticator, create_workflow
 from flowpay.core.config import Settings, load_settings
 from flowpay.core.http import create_app
 from flowpay.router import resolve_stage
@@ -35,7 +35,7 @@ def app_factory() -> object:
     """
     settings = configured_runtime(Arguments())
     logging.basicConfig(level=settings.log_level)
-    return create_app(settings, create_workflow(settings))
+    return create_app(settings, create_workflow(settings), create_authenticator(settings))
 
 
 def main() -> None:
@@ -47,8 +47,9 @@ def main() -> None:
     try:
         settings = configured_runtime(args)
         workflow = create_workflow(settings)
+        authenticator = create_authenticator(settings)
     except ValueError as error:
         parser.error(str(error))
     logging.basicConfig(level=settings.log_level)
-    app = create_app(settings, workflow)
+    app = create_app(settings, workflow, authenticator)
     uvicorn.run(app, host=settings.host, port=settings.port, workers=1, timeout_graceful_shutdown=5)

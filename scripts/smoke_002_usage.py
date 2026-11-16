@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """002 冒烟驱动：真实模型跑六轮，逐轮核对用量契约（message.assistant usage）。
 
 用法：容器内 `python scripts/smoke_002_usage.py [--url http://127.0.0.1:8000]`，
@@ -13,11 +14,15 @@ import httpx
 from flowpay.core.chat.types import ChatMessage, SessionView
 from pydantic import TypeAdapter
 
+from scripts.auth import AuthenticatedClient, add_arguments
+
 
 class Arguments(argparse.Namespace):
     """驱动参数：后端地址与单轮等待上限。"""
 
     url: str = "http://127.0.0.1:8000"
+    username: str = ""
+    password: str = ""
     timeout: float = 300.0
 
 
@@ -35,7 +40,9 @@ def wait_terminal(client: httpx.Client, sid: str, timeout: float) -> SessionView
     """轮询会话直到本轮终态；超过上限按超时失败处理。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        view = TypeAdapter(SessionView).validate_json(client.get(f"/api/sessions/{sid}").content)
+        view = TypeAdapter(SessionView).validate_json(
+            client.get(f"/api/sessions/{sid}").content
+        )
         if view["status"] != "running":
             return view
         time.sleep(0.5)
@@ -47,16 +54,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=Arguments.url)
     parser.add_argument("--timeout", type=float, default=Arguments.timeout)
+    add_arguments(parser)
     args = parser.parse_args(namespace=Arguments())
-    with httpx.Client(base_url=args.url, timeout=30) as client:
-        client.get("/api/health").raise_for_status()
+    with AuthenticatedClient(args.url, args.username, args.password) as client:
         created = client.post("/api/sessions", json={})
         created.raise_for_status()
         sid = TypeAdapter(SessionView).validate_json(created.content)["id"]
         print(f"session: {sid}")
         for index, text in enumerate(MESSAGES, start=1):
             response = client.post(
-                f"/api/sessions/{sid}/messages", json={"request_id": f"smoke_{index}", "content": text}
+                f"/api/sessions/{sid}/messages",
+                json={"request_id": f"smoke_{index}", "content": text},
             )
             response.raise_for_status()
             view = wait_terminal(client, sid, args.timeout)

@@ -158,8 +158,12 @@ class Search:
         limit: int = 5,
         filters: JsonObject | None = None,
     ) -> list[Passage]:
-        """核对集合和无文档类型过滤；包含 missing 的查询模拟零命中。"""
-        assert collection_id == "fixture" and filters is None and self.tracer is not None
+        """核对集合与可见范围过滤；包含 missing 的查询模拟零命中。
+
+        specs/005 起商户会话会带 audience=external，夹具接受这两种口径。
+        """
+        assert collection_id == "fixture" and self.tracer is not None
+        assert filters in (None, {"audience": "external"})
         self.queries.append((text, limit))
         await self.tracer.emit("knowledge.request", {"query": text, "limit": limit})
         self.started.set()
@@ -177,9 +181,15 @@ class Search:
         )
         return results
 
-    async def read_document(self, collection_id: str, doc_id: str) -> list[Passage]:
-        """按编号整篇读回；未登记的编号返回空列表，与真实存储一致。"""
+    async def read_document(
+        self, collection_id: str, doc_id: str, filters: JsonObject | None = None
+    ) -> list[Passage]:
+        """按编号整篇读回；未登记的编号返回空列表，与真实存储一致。
+
+        specs/005 起商户会话带 audience=external，夹具接受两种可见范围口径。
+        """
         assert collection_id == "fixture" and self.tracer is not None
+        assert filters in (None, {"audience": "external"})
         self.reads.append(doc_id)
         passages = self.documents.get(doc_id, [])
         await self.tracer.emit(

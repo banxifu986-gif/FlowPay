@@ -35,6 +35,12 @@ def parse_document(source_path: str, content: str) -> tuple[Document, int]:
     for key in ("doc_id", "title"):
         if not require_text(metadata.get(key)).strip():
             raise ValueError(f"Missing {key}: {source_path}")
+    # 文档可见性只有两级（specs/005 US3）：缺省 external，因此既有文档不需要先改一遍；
+    # 过滤条件落在 metadata，检索与整篇读回都按它收窄。
+    audience = require_text(metadata.get("audience", "external"))
+    if audience not in ("external", "internal"):
+        raise ValueError(f"Invalid audience: {source_path}")
+    metadata["audience"] = audience
     document = Document(
         require_text(metadata["doc_id"]),
         require_text(metadata["title"]),

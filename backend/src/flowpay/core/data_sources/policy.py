@@ -35,6 +35,22 @@ class SqlSource(TypedDict):
     timeout_seconds: NotRequired[float]
 
 
+class LogOwnership(TypedDict):
+    """日志来源的归属反查：用一条已登记的 SQL 关系把请求值解析成隔离列值。
+
+    没有账户列的日志（例如投递尝试）无法直接按 scope 过滤；这里声明「用哪个登记
+    关系反查、要拿到哪些隔离列」。core 只按声明取过滤键并比较同名 scope 列，
+    不知道具体业务字段，也就能沿用 webhook_deliveries 经 events 取 scope 的同一思路。
+
+    Attributes:
+        source: 已登记的 SQL 关系名；它的 filters 里出现哪些请求字段，就用它们反查。
+        scope: 反查结果里要读出的隔离列名；与主体绑定的同名值逐一比较。
+    """
+
+    source: str
+    scope: list[str]
+
+
 class LogSource(TypedDict):
     """一个日志文件的格式、公开字段和允许的过滤条件。"""
 
@@ -46,6 +62,7 @@ class LogSource(TypedDict):
     values: NotRequired[dict[str, list[str]]]
     max_rows: NotRequired[int]
     max_line_bytes: NotRequired[int]
+    ownership: NotRequired[LogOwnership]
 
 
 class SourcePolicy(TypedDict):

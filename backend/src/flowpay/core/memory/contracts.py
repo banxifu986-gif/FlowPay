@@ -37,6 +37,8 @@ class MemoryNote:
     note_id: str
     session_id: str
     workflow: str
+    # 商户 account_id：记忆只在同一 owner 内存取、召回与淘汰（specs/005 US4）。
+    owner: str
     created_at: str
     # 结构化键（casefold 归一、有序）：case 值与查询目标里出现的记录编号。
     keys: list[str]

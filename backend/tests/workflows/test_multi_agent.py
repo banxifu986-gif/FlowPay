@@ -22,6 +22,7 @@ from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.dataset import dataset_path, snapshot_ready
 from flowpay.workflows.multi_agent import MultiAgentWorkflow
 from flowpay.workflows.multi_agent.state import Finding, WorkerReport
+from tests.core.principals import INTERNAL
 
 from .fixtures import (
     Model,
@@ -59,7 +60,7 @@ def make_manager(
 
 async def say(manager: SessionManager, sid: str, request_id: str, text: str) -> None:
     """提交一轮用户消息并等它结束。"""
-    await manager.submit_message(sid, request_id, text)
+    await manager.submit_message(sid, request_id, text, INTERNAL)
     await manager.tasks[sid]
 
 
@@ -69,10 +70,12 @@ async def test_rule_short_circuit_needs_no_model_call(tmp_path: Path) -> None:
     manager, resources = make_manager(tmp_path, model, search)
     model.responses = [conversation("没有需要调查的任务。"), grounded("排查分支的回答。")]
     try:
-        sid = require_text((await manager.create_session())["id"])
-        await manager.submit_message(sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(
+            sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看", INTERNAL
+        )
         await manager.tasks[sid]
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert require_text(view["messages"][-1]["content"]) == (
             "排查分支的回答。\n\n[doc:RULE-1#c001]"
@@ -97,10 +100,10 @@ async def test_chitchat_replies_without_any_tool(tmp_path: Path) -> None:
         conversation("你好！我可以帮你排查支付与 Webhook 问题。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
-        await manager.submit_message(sid, "first", "你好，你能做什么？")
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "你好，你能做什么？", INTERNAL)
         await manager.tasks[sid]
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert (
             require_text(view["messages"][-1]["content"])
@@ -125,10 +128,10 @@ async def test_doc_qa_answers_from_retrieved_evidence(tmp_path: Path) -> None:
         grounded("HTTP 410 后禁用端点。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
-        await manager.submit_message(sid, "first", "Webhook 的重试策略是什么？")
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "Webhook 的重试策略是什么？", INTERNAL)
         await manager.tasks[sid]
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert "HTTP 410 后禁用端点" in require_text(view["messages"][-1]["content"])
         assert len(search.queries) == 1
@@ -146,10 +149,10 @@ async def test_doc_qa_without_hits_admits_insufficiency(tmp_path: Path) -> None:
     manager, resources = make_manager(tmp_path, model, search)
     model.responses = [completion(calls=[intent_call("intent_1", "docs")])]
     try:
-        sid = require_text((await manager.create_session())["id"])
-        await manager.submit_message(sid, "first", "Webhook 的重试策略是什么？missing")
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "Webhook 的重试策略是什么？missing", INTERNAL)
         await manager.tasks[sid]
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert "依据" in require_text(view["messages"][-1]["content"])
         assert len(search.queries) == 1
@@ -169,10 +172,10 @@ async def test_unreadable_intent_falls_back_to_troubleshoot(tmp_path: Path) -> N
         grounded("直接回答。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
-        await manager.submit_message(sid, "first", "谢谢")
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "谢谢", INTERNAL)
         await manager.tasks[sid]
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert require_text(view["messages"][-1]["content"]) == "直接回答。\n\n[doc:RULE-1#c001]"
         assert len(model.requests) == 3
@@ -206,9 +209,9 @@ async def test_doc_worker_searches_and_reports_with_evidence(tmp_path: Path) -> 
         grounded("已根据调查报告回答。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，重试策略是什么")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert require_text(view["messages"][-1]["content"]) == (
             "已根据调查报告回答。\n\n[doc:RULE-1#c001]"
@@ -249,9 +252,9 @@ async def test_repeated_query_is_refused_and_uses_existing_results(tmp_path: Pat
         grounded("已根据调查报告回答。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，重试策略是什么")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert len(search.queries) == 1
     finally:
@@ -293,7 +296,7 @@ async def run_timed_turn(root: Path, max_concurrency: int | None) -> float:
         grounded("已根据调查报告回答。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         start = perf_counter()
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
         elapsed = perf_counter() - start
@@ -326,9 +329,9 @@ async def test_insufficient_conditions_ask_user_then_wait(tmp_path: Path) -> Non
         completion(calls=[ask_call("ask_1", ["account_id", "environment"], "请提供账户与环境")]),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "waiting_user"
         assert require_text(view["messages"][-1]["content"]) == "请提供账户与环境"
         assert len(model.requests) == 3
@@ -357,12 +360,12 @@ async def test_supplied_conditions_are_not_asked_again_after_waiting(tmp_path: P
         grounded("已根据调查报告回答。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
-        waiting = await manager.get_session(sid)
+        waiting = await manager.get_session(sid, INTERNAL)
         assert require_text(waiting["status"]) == "waiting_user"
         await say(manager, sid, "second", "生产环境，账户 acct_bg_001")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         # 第二轮调查员的第一次请求带上一轮的 payment_id；重复索要被退回时
         # 提示"用户已经提供"，随后本轮仍以正常回答结束，而不是再次等待。
@@ -399,9 +402,9 @@ async def test_pending_question_stops_the_other_worker(tmp_path: Path) -> None:
         completion(calls=[ask_call("ask_1", ["account_id", "environment"], "请提供账户与环境")]),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "waiting_user"
         assert require_text(view["messages"][-1]["content"]) == "请提供账户与环境"
         # 只有协调者和发起追问的调查员消耗了模型调用，另一个调查员没有开工。
@@ -425,11 +428,11 @@ async def test_conditions_survive_intent_switch(tmp_path: Path) -> None:
         grounded("已根据调查报告回答。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "生产环境，账户 acct_bg_001，支付 pay_bg_001_0003")
         await say(manager, sid, "second", "谢谢")
         await say(manager, sid, "third", "acct_bg_001 这里，顺便查查重试策略的文档")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         known = require_object(require_object(view["state"]["case"])["known"])
         assert set(known) == {"environment", "account_id", "payment_id"}
         # 第三轮调查员（requests[5]，requests[4] 是协调者）的请求里带简报：
@@ -451,9 +454,9 @@ async def test_synthesize_disputes_invented_ids(tmp_path: Path) -> None:
         grounded("修正后的结论。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert require_text(view["messages"][-1]["content"]) == (
             "修正后的结论。\n\n[doc:RULE-1#c001]"
@@ -475,9 +478,9 @@ async def test_environment_word_does_not_short_circuit(tmp_path: Path) -> None:
         grounded("HTTP 410 后禁用端点。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "生产环境的 Webhook 重试策略是什么？")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         definition = require_object(require_list(model.requests[0]["tools"])[0])
         assert require_object(definition["function"])["name"] == "set_intent"
@@ -494,9 +497,9 @@ async def test_plan_task_list_is_capped(tmp_path: Path) -> None:
     tasks: list[JsonObject] = [{"kind": "docs", "objective": f"任务{i}"} for i in range(5)]
     model.responses = [completion(calls=[tasks_call("plan_1", tasks)]), grounded("直接回答。")]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         assert len(model.requests) == 2
     finally:
@@ -557,13 +560,13 @@ async def test_condition_revision_discards_stale_findings(tmp_path: Path) -> Non
         grounded("已根据调查报告回答。"),
     ]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "生产环境 acct_bg_001 支付 pay_bg_001_0003 没收到通知")
-        first = await manager.get_session(sid)
+        first = await manager.get_session(sid, INTERNAL)
         findings = require_list(first["state"]["findings"])
         assert any("acct_bg_001" in require_text(require_object(f)["target"]) for f in findings)
         await say(manager, sid, "second", "说错了，是 acct_bm_030")
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "completed"
         findings = require_list(view["state"]["findings"])
         assert findings and all(
@@ -593,9 +596,9 @@ async def run_solo_troubleshoot(
     """单 doc 任务排查轮（不经数据源），返回会话视图。"""
     manager, resources = make_manager(tmp_path, model, search, policy=policy)
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "帮我看看这笔支付为什么没收到通知")
-        return await manager.get_session(sid)
+        return await manager.get_session(sid, INTERNAL)
     finally:
         await manager.shutdown()
         resources.close()
@@ -693,6 +696,7 @@ async def test_cancellation_passes_through_investigate(tmp_path: Path) -> None:
     store = EventStore(tmp_path / "events.sqlite")
     runtime = AgentRuntime(Tracer(store, "s1", "r1"))
     shared = SharedTurn(budget=Budget(4, 4))
+
     class CancelModel(Model):
         """invoke 直接取消的受控模型：驱动取消穿透路径（specs/003 FR-10）。"""
 

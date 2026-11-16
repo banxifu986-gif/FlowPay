@@ -150,3 +150,38 @@ async def test_wrong_input_batch_rolls_back(
     with pytest.raises(ValueError, match="input differs"):
         builder.save_embeddings(cid, [("doc", 1), ("doc", 2)], batch)
     assert len(builder.missing_embeddings(cid)) == 2
+
+
+async def test_legacy_metadata_without_audience_stays_visible(
+    stores: tuple[PostgresVectorStore, PostgresVectorStore],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧集合没有 audience 键时按 external 处理，不必重建集合（specs/005 US3）。"""
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "secret")
+    builder, reader = stores
+    settings = model_settings()
+    cid = collection(builder, settings)
+    legacy = Document("legacy", "legacy", "legacy.md", "legacy", {"kind": "legacy"})
+    internal = Document("internal", "internal", "internal.md", "internal", {"audience": "internal"})
+    builder.save_document(cid, legacy, [Chunk(1, "legacy")])
+    builder.save_document(cid, internal, [Chunk(1, "internal")])
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1, 0, 0]}]})
+
+    events = EventStore(tmp_path / "audience.sqlite")
+    tracer = Tracer(events, "audience", "run")
+    embeddings = EmbeddingClient(
+        OpenAiEmbeddingModel(settings, httpx.MockTransport(handler)), tracer
+    )
+    await KnowledgeClient(builder, embeddings, tracer).embed_pending(cid)
+    builder.mark_ready(cid, {"legacy": 1, "internal": 1})
+    query = KnowledgeClient(reader, embeddings, tracer)
+
+    external = await query.search(cid, "legacy", filters={"audience": "external"})
+    internal_only = await query.search(cid, "legacy", filters={"audience": "internal"})
+    assert [p.source.doc_id for p in external] == ["legacy"]
+    assert [p.source.doc_id for p in internal_only] == ["internal"]
+    assert reader.read_document(cid, "legacy", {"audience": "external"})
+    assert reader.read_document(cid, "internal", {"audience": "external"}) == []

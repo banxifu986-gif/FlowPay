@@ -54,6 +54,11 @@ class Settings:
     embedding: EmbeddingSettings | None = None
     sources_config: Path | None = None
     knowledge_collection_id: str | None = None
+    # 预置账号文件（specs/005）；路径由 loader 解析。缺省 None = 不装配认证，
+    # 只有 scripts/demo.py 的契约假后端走这条路径，服务入口启动前会拒绝缺配置。
+    accounts_path: Path | None = None
+    # 令牌签名密钥只保存环境变量名，值不进配置快照。
+    auth_token_secret_env: str = "FLOWPAY_AUTH_TOKEN_SECRET"
     # 请求前上下文投影：两项预算都 > 0 时启用；缺省 0 = 关闭 = 现行为。
     context_char_budget: int = 0
     context_tool_result_budget: int = 0
@@ -85,4 +90,5 @@ class Settings:
         value["data_dir"] = str(self.data_dir)
         value["dataset_path"] = str(self.dataset_path)
         value["sources_config"] = str(self.sources_config) if self.sources_config else None
+        value["accounts_path"] = str(self.accounts_path) if self.accounts_path else None
         return value

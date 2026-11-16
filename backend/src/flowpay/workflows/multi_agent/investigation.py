@@ -296,9 +296,7 @@ def plan_node(
                 note_budget = max(0, context_policy.char_budget - len(content) - 2)
             # 预算算尽退化为原文：简报承载跨轮结论，不按「正文全截只留标记」处理。
             note = (
-                clip_text(briefing, note_budget)
-                if context_policy and note_budget > 0
-                else briefing
+                clip_text(briefing, note_budget) if context_policy and note_budget > 0 else briefing
             )
             content = f"{content}\n\n{note}"
         messages: list[ChatCompletionMessageParam] = [
@@ -392,11 +390,21 @@ def sql_worker_node(
 
         agent.offer(
             *(
-                sql_tool(spec, run_sql, runtime.field_values("sql", spec.source))
+                sql_tool(
+                    spec,
+                    run_sql,
+                    runtime.field_values("sql", spec.source),
+                    runtime.scope_overrides,
+                )
                 for spec in SQL_TOOLS
             ),
             *(
-                log_tool(spec, run_logs, runtime.field_values("logs", spec.source))
+                log_tool(
+                    spec,
+                    run_logs,
+                    runtime.field_values("logs", spec.source),
+                    runtime.scope_overrides,
+                )
                 for spec in LOG_TOOLS
             ),
             ask_user_tool(ask_user),
@@ -487,9 +495,12 @@ def synthesize_node(
             # （002 先例：预算未达成不算失败）。未配置策略时与原拼接逐字一致。
             remaining = context_policy.char_budget - len(question)
             reports = state["reports"]
-            frame = len("调查报告：\n") + len("（没有调查报告）") + sum(
-                len(f"[{report.worker} 调查员]\n") for report in reports
-            ) + 2 * max(0, len(reports) - 1)
+            frame = (
+                len("调查报告：\n")
+                + len("（没有调查报告）")
+                + sum(len(f"[{report.worker} 调查员]\n") for report in reports)
+                + 2 * max(0, len(reports) - 1)
+            )
             cap = max(0, (remaining - frame) // len(reports)) if reports else 0
             reports_block = "\n\n".join(
                 f"[{report.worker} 调查员]\n"
@@ -512,9 +523,7 @@ def synthesize_node(
         if briefing := turn_briefing(shared, case_note):
             # 预算算尽退化为原文：跨轮简报不被标记整段湮灭（与报告分支口径一致）。
             note = (
-                clip_text(briefing, note_budget)
-                if context_policy and note_budget > 0
-                else briefing
+                clip_text(briefing, note_budget) if context_policy and note_budget > 0 else briefing
             )
             content = f"{content}\n\n{note}"
         content = f"{content}\n\n调查报告：\n{reports_block or '（没有调查报告）'}"

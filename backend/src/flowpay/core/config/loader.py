@@ -92,10 +92,9 @@ def resolve_paths(config: JsonObject, directory: Path) -> JsonObject:
         if field not in resolved:
             raise ValueError(f"Missing configuration field: {field}")
         resolved[field] = (directory / require_text(resolved[field])).resolve()
-    if resolved.get("sources_config"):
-        resolved["sources_config"] = (
-            directory / require_text(resolved["sources_config"])
-        ).resolve()
+    for optional in ("sources_config", "accounts_path"):
+        if resolved.get(optional):
+            resolved[optional] = (directory / require_text(resolved[optional])).resolve()
     return resolved
 
 

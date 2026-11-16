@@ -14,6 +14,7 @@ from flowpay.core.memory.store import MemoryStore
 
 SESSION = "session_mem"
 RUN = "run_mem"
+OWNER = "acct_test_owner"
 
 
 class FakeEmbedder:
@@ -48,6 +49,7 @@ def make_store(path: Path) -> MemoryStore:
             note_id="note_seed",
             session_id="session_seed",
             workflow="manual-loop",
+            owner=OWNER,
             created_at="2026-11-15T09:00:00+00:00",
             keys=["pay_bg_001_0003"],
             conditions={"known": {}},
@@ -70,6 +72,7 @@ def make_recall(
     return TracedMemoryRecall(
         store or make_store(tmp_path / "memory.sqlite"),
         tracer,
+        OWNER,
         as_embedder(embedder) if embedder is not None else None,
         semantic_limit,
     )
@@ -138,8 +141,9 @@ class BrokenStore(MemoryStore):
     """故障替身：键匹配一律抛错，模拟记忆子系统故障。"""
 
     @override
-    def match_keys(self, keys: list[str], *, limit: int) -> list[MemoryNote]:
-        """无条件失败，触发 recall 的降级路径。"""
+    def match_keys(self, owner: str, keys: list[str], *, limit: int) -> list[MemoryNote]:
+        """无条件失败，触发 recall 的降级路径；owner 不参与故障模拟。"""
+        del owner, keys, limit
         raise RuntimeError("memory offline")
 
 

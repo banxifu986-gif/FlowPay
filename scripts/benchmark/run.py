@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """用 dataset 的 300 题跑各阶段，产出按能力分层的对照报表。
 
 不修改后端代码：只通过 SessionManager 的公开接口提交消息，其余全部从事件日志投影。
@@ -41,6 +42,7 @@ if __package__ in {None, ""}:
 # sys.path 注入后才能导入仓库模块，E402 是这一手法的必然代价。
 from flowpay.dataset import require_dataset
 
+from scripts.auth import INTERNAL
 from scripts.benchmark import conversation, evidence
 from scripts.benchmark.simulated import SimulatedUser, keyword_hits
 
@@ -129,15 +131,16 @@ async def play(
     limit = turn_limit(talk) if multi else 0
     user = SimulatedUser(dict(talk))
     script = conversation.Transcript()
-    session = require_text((await manager.create_session())["id"])
+    # 基准按内部账号运行：看全部文档/数据，记忆关闭，保证分数与基线同口径（specs/005 US7）。
+    session = require_text((await manager.create_session(INTERNAL))["id"])
     identifier = require_text(case["question_id"])
     message = question
     answer = ""
     events: list[Event] = []
     for turn in range(limit + 1):
-        await manager.submit_message(session, f"{identifier}-{turn}", message)
+        await manager.submit_message(session, f"{identifier}-{turn}", message, INTERNAL)
         await manager.tasks[session]
-        view = await manager.get_session(session)
+        view = await manager.get_session(session, INTERNAL)
         events = read(session)
         messages = view["messages"]
         answer = require_text(messages[-1]["content"]) if messages else ""
@@ -163,7 +166,9 @@ async def play(
         reply, disclosed = user.answer(answer)
         if not disclosed:
             script.note("unexpected_category")
-        script.exchanges.append(conversation.Exchange(signal, categories, disclosed, reply[:200]))
+        script.exchanges.append(
+            conversation.Exchange(signal, categories, disclosed, reply[:200])
+        )
         message = reply
     return answer, events, script
 
@@ -193,7 +198,9 @@ def supported(answer: str, assertion: str) -> bool:
     return bool(grams) and sum(gram in text for gram in grams) / len(grams) >= 0.5
 
 
-def score(case: JsonObject, answer: str, events: list[Event], alignment: dict[str, str]) -> Row:
+def score(
+    case: JsonObject, answer: str, events: list[Event], alignment: dict[str, str]
+) -> Row:
     """按证据覆盖与断言支持打分；不报 strict，两边工具词汇不同。"""
     identifier = require_text(case["question_id"])
     documents, records = evidence.expected_ids(identifier)
@@ -201,13 +208,17 @@ def score(case: JsonObject, answer: str, events: list[Event], alignment: dict[st
     doc_hit, doc_total = evidence.coverage(documents, found)
     record_hit, record_total = evidence.coverage(records, found)
     truth = require_object(case["ground_truth"])
-    assertions = [require_object(item) for item in require_list(truth["required_assertions"])]
+    assertions = [
+        require_object(item) for item in require_list(truth["required_assertions"])
+    ]
     # 禁止结论的文本形如"不得认定：X"，判定时去掉前缀，只比对结论本身。
     forbidden = [
         require_text(item).split("：", 1)[-1]
         for item in require_list(truth.get("negative_assertions") or [])
     ]
-    supported_count = sum(supported(answer, require_text(a["text"])) for a in assertions)
+    supported_count = sum(
+        supported(answer, require_text(a["text"])) for a in assertions
+    )
     breaches = sum(violated(answer, text) for text in forbidden)
     return {
         "question_id": identifier,
@@ -336,7 +347,9 @@ async def main() -> None:
     parser.add_argument("--config", type=Path, default=Arguments.config)
     args = parser.parse_args(namespace=Arguments())
 
-    output = ROOT / "var/benchmark" / f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid4().hex[:6]}"
+    output = (
+        ROOT / "var/benchmark" / f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid4().hex[:6]}"
+    )
     output.mkdir(parents=True)
     alignment = evidence.chunk_alignment()
     cases = sample(blueprints(), args.per_type)

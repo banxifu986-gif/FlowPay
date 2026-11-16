@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """构建命令的资源装配与报告输出；沿用项目事件库及单运行器锁。"""
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from flowpay.core.execution.types import TurnRecord
 from flowpay.core.json import JsonObject, to_json_object
 from flowpay.core.knowledge import PostgresVectorStore
 from typing_extensions import TypedDict
+
+from scripts.auth import INTERNAL
 
 from .corpus import CorpusSettings, prepare_corpus
 from .models import KnowledgeBuildPlan
@@ -66,11 +69,12 @@ async def run_preparation(
         manager = SessionManager(store, workflow, runtime_settings)
         try:
             await manager.recover()
-            sid = (await manager.create_session())["id"]
+            sid = (await manager.create_session(INTERNAL))["id"]
             await manager.submit_message(
                 sid,
                 new_id("request"),
                 f"knowledge {operation}: {corpus.collection_id}",
+                INTERNAL,
             )
             print(
                 json.dumps(
@@ -84,10 +88,12 @@ async def run_preparation(
                 flush=True,
             )
             await manager.tasks[sid]
-            session = await manager.get_session(sid)
+            session = await manager.get_session(sid, INTERNAL)
             events = await asyncio.to_thread(store.read, sid)
             log = output_dir / f"{sid}.jsonl"
-            log.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
+            log.write_text(
+                "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
+            )
             report: KnowledgePreparationReport = {
                 "passed": session["status"] == "completed",
                 "operation": operation,
@@ -96,10 +102,14 @@ async def run_preparation(
                 "result": session["state"],
                 "last_run": session["runs"][-1],
                 "log": str(log),
-                "embedding_requests": sum(e["type"] == "embedding.request" for e in events),
+                "embedding_requests": sum(
+                    e["type"] == "embedding.request" for e in events
+                ),
             }
             path = output_dir / f"{sid}-report.json"
-            path.write_text(json.dumps(to_json_object(report), ensure_ascii=False, indent=2) + "\n")
+            path.write_text(
+                json.dumps(to_json_object(report), ensure_ascii=False, indent=2) + "\n"
+            )
             print(
                 json.dumps({"passed": report["passed"], "report": str(path)}),
                 flush=True,

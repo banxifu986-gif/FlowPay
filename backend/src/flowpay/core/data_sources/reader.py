@@ -6,10 +6,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import sqlite3
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -17,11 +18,14 @@ from typing import Literal, TypedDict, cast
 
 from pydantic import TypeAdapter
 
+from flowpay.core.errors import error_summary
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.event_log.store import new_id
 from flowpay.core.json import JsonObject, parse_json, require_object, require_text
 
-from .policy import LogSource, SourcePolicy, SqlSource
+from .policy import LogOwnership, LogSource, SourcePolicy, SqlSource
+
+logger = logging.getLogger(__name__)
 
 
 class SourceFile(TypedDict):
@@ -390,27 +394,113 @@ class SourceClient:
         end: str | None = None,
         limit: int = 50,
         contains: str | None = None,
+        bound_scope: Mapping[str, str] | None = None,
     ) -> SourceResult:
-        """记录日志来源、过滤条件和时间范围，再返回带文件行号的结果；错误不转为空命中。"""
-        options = {
-            "filters": filters,
+        """记录日志来源、过滤条件和时间范围，再返回带文件行号的结果；错误不转为空命中。
+
+        bound_scope 是会话主体绑定的隔离列值。日志来源可以声明 ownership：core 先
+        用它指定的登记关系把请求值反查成 scope 列，再与绑定值逐个比较；对不上就
+        返回空行，不暴露「这条记录存在但不属于你」。解析出的 scope 一并记进
+        source.request.parameters，便于审计实际执行的边界。
+        """
+        chosen = dict(filters or {})
+        audit: JsonObject = dict(chosen)
+        allowed = True
+        log_spec = self.sources.policy.get("logs", {}).get(source)
+        ownership = log_spec.get("ownership") if log_spec is not None else None
+        if ownership is not None and bound_scope:
+            allowed, resolved = await asyncio.to_thread(
+                self._resolve_ownership, ownership, chosen, bound_scope
+            )
+            # 拒绝时只记主体自己的绑定值：命中行的真实 owner 属于别人，不能进商户可读的事件。
+            audit = (
+                {**chosen, **resolved}
+                if allowed
+                else {
+                    **chosen,
+                    **{
+                        name: bound_scope[name]
+                        for name in ownership["scope"]
+                        if name in bound_scope
+                    },
+                }
+            )
+        # 与 SQL 查询同名：事件里看到的是实际条件（含反查出的 scope），不是提示词。
+        options: JsonObject = {
+            "parameters": audit,
             "start": start,
             "end": end,
             "limit": limit,
             "contains": contains,
         }
-        query = partial(
-            self.sources.logs,
-            source,
-            filters=filters,
-            start=start,
-            end=end,
-            limit=limit,
-            contains=contains,
-        )
+
+        def run() -> SourceResult:
+            if not allowed:
+                return self._empty_logs(source, audit, start, end, contains)
+            return self.sources.logs(
+                source, filters=chosen, start=start, end=end, limit=limit, contains=contains
+            )
+
         return await self._execute_recorded_query(
-            query, context, {"kind": "logs", "name": source, **options}
+            run, context, {"kind": "logs", "name": source, **options}
         )
+
+    def _resolve_ownership(
+        self, ownership: LogOwnership, filters: JsonObject, bound_scope: Mapping[str, str]
+    ) -> tuple[bool, JsonObject]:
+        """用登记关系反查请求值归属；无法证明属于本主体时返回拒绝与已解析的 scope。
+
+        请求字段里只有登记关系也认识的才参与反查；一个都没有就无法归属，按拒绝处理。
+        比较只针对主体实际绑定的列（environment 是对话条件，不在强制注入范围）。
+        """
+        spec = self.sources.policy.get("sql", {}).get(ownership["source"])
+        if spec is None:
+            raise ValueError("Ownership source is not registered")
+        probes = {name: value for name, value in filters.items() if name in spec["filters"]}
+        if not probes:
+            return False, {}
+        result = self.sources.sql(ownership["source"], {}, probes)
+        rows = [require_object(row) for row in result["rows"]]
+        if not rows:
+            return False, {}
+        scopes = ownership["scope"]
+        first = rows[0]
+        resolved: JsonObject = {
+            name: first[name] for name in scopes if isinstance(first.get(name), str)
+        }
+        compared = {name: value for name, value in bound_scope.items() if name in scopes}
+        if any(row.get(name) != value for row in rows for name, value in compared.items()):
+            return False, resolved
+        return True, resolved
+
+    def _empty_logs(
+        self,
+        source: str,
+        filters: JsonObject,
+        start: str | None,
+        end: str | None,
+        contains: str | None,
+    ) -> SourceResult:
+        """归属不符时的空结果；形状与正常查询一致，不额外透露原因。"""
+        log_spec = self.sources.policy.get("logs", {}).get(source)
+        if log_spec is None:
+            raise ValueError("Log source is not registered")
+        return {
+            "rows": [],
+            "truncated": False,
+            "source": {
+                "path": log_spec["path"],
+                "sha256": self.sources.files[log_spec["path"]],
+            },
+            "version": self.sources.snapshot(),
+            "query": {
+                "source": source,
+                "filters": filters,
+                "start": start,
+                "end": end,
+                "contains": contains,
+            },
+        }
 
     async def _execute_recorded_query(
         self, query: Callable[[], SourceResult], context: EventSink, request: JsonObject
@@ -429,7 +519,6 @@ class SourceClient:
             await context.emit("source.canceled", {}, call_id)
             raise
         except Exception as error:
-            await context.emit(
-                "source.error", {"error_type": type(error).__name__, "message": str(error)}, call_id
-            )
+            logger.exception("Source query failed: %s", request.get("name"))
+            await context.emit("source.error", error_summary(error), call_id)
             raise

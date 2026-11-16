@@ -1,8 +1,10 @@
 """分批调用嵌入接口，校验结果并保存调用轨迹。"""
 
 import asyncio
+import logging
 from dataclasses import asdict
 
+from flowpay.core.errors import error_summary
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.event_log.store import new_id
 from flowpay.core.json import JsonObject, require_list, require_text
@@ -10,6 +12,8 @@ from flowpay.core.json import JsonObject, require_list, require_text
 from .contracts import EmbeddedBatch, EmbeddingModel
 from .settings import EmbeddingIdentity
 from .validation import text_hash, validate_vector
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
@@ -72,10 +76,7 @@ class EmbeddingClient:
                 await self.tracer.emit("embedding.canceled", {}, call_id)
                 raise
             except Exception as error:
-                await self.tracer.emit(
-                    "embedding.error",
-                    {"error_type": type(error).__name__, "message": str(error)},
-                    call_id,
-                )
+                logger.exception("Embedding call failed: %s", call_id)
+                await self.tracer.emit("embedding.error", error_summary(error), call_id)
                 raise
         return EmbeddedBatch(self.identity, [text_hash(t) for t in texts], vectors, usages)

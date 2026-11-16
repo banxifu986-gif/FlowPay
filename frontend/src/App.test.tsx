@@ -6,22 +6,56 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { TraceEvent } from './state'
 
-class FakeEventSource extends EventTarget {
-  static instances: FakeEventSource[] = []
-  onopen: (() => void) | null = null
-  onerror: (() => void) | null = null
+// 订阅改成 fetch 流（EventSource 无法带 Authorization 头）：测试自己持有可推送的流。
+class PushStream {
+  static instances: PushStream[] = []
+  readonly body: ReadableStream<Uint8Array>
   closed = false
-  constructor(public url: string) {
-    super()
-    FakeEventSource.instances.push(this)
-    queueMicrotask(() => this.onopen?.())
+  private controller!: ReadableStreamDefaultController<Uint8Array>
+
+  constructor(
+    public url: string,
+    signal?: AbortSignal,
+  ) {
+    PushStream.instances.push(this)
+    this.body = new ReadableStream({
+      start: (controller) => {
+        this.controller = controller
+      },
+    })
+    signal?.addEventListener('abort', () => this.close())
   }
-  close() {
-    this.closed = true
-  }
+
   push(event: TraceEvent) {
-    this.dispatchEvent(new MessageEvent('trace', { data: JSON.stringify(event) }))
+    if (this.closed) return
+    this.controller.enqueue(
+      new TextEncoder().encode(
+        `id: ${event.seq}
+event: trace
+data: ${JSON.stringify(event)}
+
+`,
+      ),
+    )
   }
+
+  close() {
+    if (this.closed) return
+    this.closed = true
+    try {
+      this.controller.close()
+    } catch {
+      /* 已由取消关闭。 */
+    }
+  }
+}
+
+function streamResponse(url: string, signal?: AbortSignal | null) {
+  const stream = new PushStream(url, signal ?? undefined)
+  return new Response(stream.body, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  })
 }
 const trace = (
   seq: number,
@@ -53,8 +87,13 @@ beforeEach(() => {
     removeItem: (key: string) => storage.delete(key),
     clear: () => storage.clear(),
   })
-  FakeEventSource.instances = []
-  vi.stubGlobal('EventSource', FakeEventSource)
+  // 默认已登录：登录态相关的用例自己清空 localStorage。
+  localStorage.setItem('flowpay.token', 'test-token')
+  localStorage.setItem(
+    'flowpay.identity',
+    JSON.stringify({ username: 'merchant_demo', role: 'merchant', accountId: 'acct_demo' }),
+  )
+  PushStream.instances = []
   HTMLElement.prototype.scrollIntoView = vi.fn()
   HTMLElement.prototype.hasPointerCapture = vi.fn(() => false)
   HTMLElement.prototype.setPointerCapture = vi.fn()
@@ -63,15 +102,24 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (path: string, init?: RequestInit) => {
       if (init?.body) requests.push({ path, body: JSON.parse(init.body as string) })
+      if (path.includes('/stream')) return streamResponse(path, init?.signal)
       let body: unknown = {}
-      if (path === '/api/meta')
+      if (path === '/api/auth/login')
+        body = {
+          token: 'test-token',
+          expires_at: '2026-09-10T00:00:00Z',
+          username: 'merchant_demo',
+          role: 'merchant',
+          account_id: 'acct_demo',
+        }
+      else if (path === '/api/meta')
         body = {
           workflow: { id: 'fixture', label: '测试工作流', description: '模拟数据' },
           model: 'fixture-model',
           examples: ['没有收到通知'],
           reply_hint: '测试信息：acct_demo production req_demo_503',
         }
-      else if (path === '/api/sessions' && !init)
+      else if (path === '/api/sessions' && init?.method !== 'POST')
         body = [
           {
             id: 'session_test',
@@ -80,7 +128,7 @@ beforeEach(() => {
             updated_at: '2026-09-09T01:00:00Z',
           },
         ]
-      else if (path === '/api/sessions' && init)
+      else if (path === '/api/sessions' && init?.method === 'POST')
         body = { id: 'session_new', title: '新会话', status: 'idle' }
       else if (path.includes('/events')) body = recorded
       else body = { id: 'run_new', status: 'running' }
@@ -98,8 +146,37 @@ afterEach(() => {
 
 async function mounted() {
   render(<App />)
-  await waitFor(() => expect(FakeEventSource.instances.length).toBe(1))
+  await waitFor(() => expect(PushStream.instances.length).toBe(1))
 }
+
+describe('登录门禁', () => {
+  it('logs in, mounts the workspace and returns to login after sign-out', async () => {
+    localStorage.clear()
+    render(<App />)
+    const user = userEvent.setup()
+    expect(screen.getByRole('heading', { name: 'FlowPay 商户支持' })).toBeTruthy()
+    await user.type(screen.getByLabelText('用户名'), 'merchant_demo')
+    await user.type(screen.getByLabelText('口令'), 'merchant-password')
+    await user.click(screen.getByRole('button', { name: '登录' }))
+    await waitFor(() => expect(PushStream.instances.length).toBe(1))
+    expect(requests.find((request) => request.path === '/api/auth/login')?.body.username).toBe(
+      'merchant_demo',
+    )
+    expect(screen.getByRole('button', { name: '退出' })).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '退出' }))
+    expect(screen.getByLabelText('用户名')).toBeTruthy()
+  })
+
+  it('returns to login when the token is rejected', async () => {
+    vi.mocked(fetch).mockImplementation(async (path) => {
+      if (String(path) === '/api/meta')
+        return new Response(JSON.stringify({ detail: 'Invalid token' }), { status: 401 })
+      return new Response(JSON.stringify([]))
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByLabelText('用户名')).toBeTruthy())
+  })
+})
 
 describe('chat workspace interactions', () => {
   it('submits a message and displays persisted SSE output', async () => {
@@ -112,7 +189,7 @@ describe('chat workspace interactions', () => {
     )
     expect(requests[0].body.request_id).toBeTruthy()
     await act(async () => {
-      const stream = FakeEventSource.instances[0]
+      const stream = PushStream.instances[0]
       stream.push(trace(2, 'message.user', { content: '支付通知没收到' }))
       stream.push(trace(3, 'run.started', { input: '支付通知没收到' }))
       stream.push(trace(4, 'message.assistant', { content: '请提供请求编号', evidence: [] }))
@@ -178,7 +255,7 @@ describe('chat workspace interactions', () => {
     await user.click(screen.getByRole('button', { name: '停止' }))
     expect(requests.some((request) => request.path.endsWith('/cancel'))).toBe(true)
     await act(async () =>
-      FakeEventSource.instances[0].push(trace(3, 'run.canceled', { reason: 'user_requested' })),
+      PushStream.instances[0].push(trace(3, 'run.canceled', { reason: 'user_requested' })),
     )
     await user.click(screen.getByRole('button', { name: '继续本轮' }))
     expect(
@@ -340,6 +417,7 @@ describe('会话删除', () => {
         items = items.filter((item) => !ids.includes(item.id))
         return new Response(JSON.stringify({ deleted_ids: ids }))
       }
+      if (path.includes('/stream')) return streamResponse(path, init?.signal)
       if (path === '/api/meta')
         return new Response(
           JSON.stringify({
@@ -369,9 +447,9 @@ describe('会话删除', () => {
     )
     expect(deletions).toEqual([['session_test']])
     await waitFor(() => expect(localStorage.getItem('flowpay.session')).toBe('session_other'))
-    expect(
-      FakeEventSource.instances.find((stream) => stream.url.includes('session_test'))?.closed,
-    ).toBe(true)
+    expect(PushStream.instances.find((stream) => stream.url.includes('session_test'))?.closed).toBe(
+      true,
+    )
   })
 
   it('多选批量删除后清空列表和当前会话', async () => {

@@ -20,6 +20,7 @@ from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.dataset import dataset_path, snapshot_ready
 from flowpay.router import create_stage
 from flowpay.workflows.manual_loop import Case, conditions_in
+from tests.core.principals import INTERNAL
 
 from .fixtures import Model, Search, completion
 
@@ -97,7 +98,7 @@ def payments_call(identifier: str, account: str, environment: str, payment: str)
 
 async def say(manager: SessionManager, sid: str, request_id: str, text: str) -> None:
     """提交一轮用户消息并等它结束。"""
-    await manager.submit_message(sid, request_id, text)
+    await manager.submit_message(sid, request_id, text, INTERNAL)
     await manager.tasks[sid]
 
 
@@ -171,9 +172,9 @@ async def test_asking_for_missing_fields_ends_the_turn_waiting_for_the_user(
     model.responses = [
         completion(calls=[ask_call("a", ["account_id", "environment"], "请问是哪个账户和环境？")])
     ]
-    sid = (await manager.create_session())["id"]
+    sid = (await manager.create_session(INTERNAL))["id"]
     await say(manager, sid, "one", "有笔支付成功了但没收到通知")
-    session = await manager.get_session(sid)
+    session = await manager.get_session(sid, INTERNAL)
     assert session["status"] == "waiting_user"
     assert "哪个账户和环境" in require_text(session["messages"][-1]["content"])
     state = state_of(manager, sid)
@@ -194,14 +195,14 @@ async def test_a_paused_turn_leaves_every_tool_call_answered(
         completion(calls=[ask_call("a", ["account_id"], "哪个账户？")]),
         completion("已确认这笔支付成功。"),
     ]
-    sid = (await manager.create_session())["id"]
+    sid = (await manager.create_session(INTERNAL))["id"]
     await say(manager, sid, "one", "支付没收到通知")
     messages = require_list(state_of(manager, sid)["messages"])
     assistant = [require_object(m) for m in messages if require_object(m)["role"] == "assistant"]
     filled = [require_object(m) for m in messages if require_object(m)["role"] == "tool"]
     assert len(require_list(assistant[-1]["tool_calls"])) == len(filled)
     await say(manager, sid, "two", "生产环境 acct_bg_001")
-    assert (await manager.get_session(sid))["status"] == "completed"
+    assert (await manager.get_session(sid, INTERNAL))["status"] == "completed"
 
 
 async def test_supplied_conditions_are_handed_back_and_not_asked_again(
@@ -216,10 +217,10 @@ async def test_supplied_conditions_are_handed_back_and_not_asked_again(
         completion(calls=[payments_call("c", "acct_bg_001", "production", "pay_bg_001_0003")]),
         completion("支付 pay_bg_001_0003 状态为 succeeded。"),
     ]
-    sid = (await manager.create_session())["id"]
+    sid = (await manager.create_session(INTERNAL))["id"]
     await say(manager, sid, "one", "支付没收到通知")
     await say(manager, sid, "two", "生产环境 acct_bg_001 的 pay_bg_001_0003")
-    session = await manager.get_session(sid)
+    session = await manager.get_session(sid, INTERNAL)
     assert session["status"] == "completed"
     assert "acct_bg_001" in request_text(model, 1) and "不要再次索要" in request_text(model, 1)
     # 被退回的追问把已知值交还给模型，并说明不必重复索要。
@@ -241,7 +242,7 @@ async def test_a_corrected_condition_is_announced_as_invalidating_old_results(
         completion("这笔支付成功了。"),
         completion("账户已更正，需要重新查询。"),
     ]
-    sid = (await manager.create_session())["id"]
+    sid = (await manager.create_session(INTERNAL))["id"]
     await say(manager, sid, "one", "生产环境 acct_bg_001 的 pay_bg_001_0003 怎么样")
     await say(manager, sid, "two", "搞错了，账户是 acct_bm_030")
     briefed = request_text(model, 2)
@@ -262,7 +263,7 @@ async def test_the_same_query_is_not_run_twice_across_turns(
         completion(calls=[search_document("b", "端点禁用规则")]),
         completion("上一轮已经查过，结论不变。"),
     ]
-    sid = (await manager.create_session())["id"]
+    sid = (await manager.create_session(INTERNAL))["id"]
     await say(manager, sid, "one", "端点被禁用之后还能恢复吗")
     await say(manager, sid, "two", "再确认一下这条规则")
     assert len(search.queries) == 1
@@ -283,11 +284,11 @@ async def test_identifiers_from_an_earlier_turn_are_not_treated_as_invented(
         completion("acct_bm_006 的 pay_bm_006 目前查不到记录。"),
         completion("没有请求编号时，acct_bm_006 的 pay_bm_006 只能按账户和环境列全部记录。"),
     ]
-    sid = (await manager.create_session())["id"]
+    sid = (await manager.create_session(INTERNAL))["id"]
     await say(manager, sid, "one", "有两笔金额很特殊的支付怎么都建不出来")
     await say(manager, sid, "two", "这个账户的编号是 acct_bm_006，那笔支付的编号是 pay_bm_006")
     await say(manager, sid, "three", "没有 request id 就无法查询了吗？")
     assert not [e for e in manager.store.read(sid) if e["type"] == "answer.disputed"]
-    view = await manager.get_session(sid)
+    view = await manager.get_session(sid, INTERNAL)
     assert require_text(view["status"]) == "completed"
     assert "pay_bm_006" in require_text(view["messages"][-1]["content"])

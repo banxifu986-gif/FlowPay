@@ -28,7 +28,11 @@ class ChatMessage(TypedDict):
 
 
 class SessionSummary(TypedDict):
-    """会话目录的简要投影，供列表页显示标题、状态和更新时间。"""
+    """会话目录的简要投影，供列表页显示标题、状态和更新时间。
+
+    user_id 是会话归属（登录主体用户名）；商户的列表按它过滤，内部看全部；
+    005 之前的历史会话没有该字段，读回 None 且不向商户展示。
+    """
 
     id: str
     title: str
@@ -36,6 +40,7 @@ class SessionSummary(TypedDict):
     updated_at: str
     last_seq: int
     workflow: WorkflowIdentity
+    user_id: str | None
 
 
 class SessionView(SessionSummary):

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
+from flowpay.core.errors import error_summary
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.event_log.store import new_id
 from flowpay.core.json import JsonObject, require_object, to_json_object
@@ -10,6 +12,8 @@ from flowpay.core.llm.embedding import EmbeddingClient
 from flowpay.core.llm.embedding.settings import same_vector_space
 
 from .contracts import Passage, VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeClient:
@@ -107,26 +111,27 @@ class KnowledgeClient:
             await self.tracer.emit("knowledge.canceled", {}, call_id)
             raise
         except Exception as error:
-            await self.tracer.emit(
-                "knowledge.error",
-                {"error_type": type(error).__name__, "message": str(error)},
-                call_id,
-            )
+            logger.exception("Knowledge request failed: %s", call_id)
+            await self.tracer.emit("knowledge.error", error_summary(error), call_id)
             raise
 
     # 整篇读回与检索分别记录，便于在轨迹里区分"搜了什么"和"读了哪一篇"。
-    async def read_document(self, collection_id: str, doc_id: str) -> list[Passage]:
+    async def read_document(
+        self, collection_id: str, doc_id: str, filters: JsonObject | None = None
+    ) -> list[Passage]:
         """整篇取回一份文档的全部分块并记录过程。
 
         不经过嵌入与向量排序：模型已经知道文档编号，这一步只是把它读完。
-        文档不存在时返回空列表，由调用方决定如何把这件事回传给模型。
+        filters 与检索同口径：商户读不到 internal 文档，返回空列表由调用方回传。
         """
         call_id = new_id("retrieval")
         await self.tracer.emit(
             "document.request", {"collection_id": collection_id, "doc_id": doc_id}, call_id
         )
         try:
-            passages = await asyncio.to_thread(self.store.read_document, collection_id, doc_id)
+            passages = await asyncio.to_thread(
+                self.store.read_document, collection_id, doc_id, filters
+            )
             await self.tracer.emit(
                 "document.response",
                 {"doc_id": doc_id, "passages": [to_json_object(p) for p in passages]},
@@ -137,9 +142,8 @@ class KnowledgeClient:
             await self.tracer.emit("document.canceled", {"doc_id": doc_id}, call_id)
             raise
         except Exception as error:
+            logger.exception("Document read failed: %s", doc_id)
             await self.tracer.emit(
-                "document.error",
-                {"doc_id": doc_id, "error_type": type(error).__name__, "message": str(error)},
-                call_id,
+                "document.error", {"doc_id": doc_id, **error_summary(error)}, call_id
             )
             raise

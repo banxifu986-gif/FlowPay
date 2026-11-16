@@ -26,6 +26,7 @@ from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.knowledge.passages import PassageSet
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.workflows.multi_agent import MultiAgentWorkflow
+from tests.core.principals import INTERNAL
 
 from .fixtures import (
     Model,
@@ -56,9 +57,7 @@ def build_manager(
     )
     resources = RuntimeResources(settings, retriever=search.for_run)
     workflow = MultiAgentWorkflow(model, retrieval_input, policy, max_concurrency=1)
-    manager = SessionManager(
-        EventStore(tmp_path / "events.sqlite"), workflow, settings, resources
-    )
+    manager = SessionManager(EventStore(tmp_path / "events.sqlite"), workflow, settings, resources)
     return manager, resources
 
 
@@ -73,11 +72,11 @@ async def run_turns(
     search = search or Search()
     manager, resources = build_manager(tmp_path, model, search, policy)
     try:
-        sid = (await manager.create_session())["id"]
+        sid = (await manager.create_session(INTERNAL))["id"]
         for index, message in enumerate(messages):
-            await manager.submit_message(sid, f"run{index}", message)
+            await manager.submit_message(sid, f"run{index}", message, INTERNAL)
             await manager.tasks[sid]
-        return await manager.get_session(sid)
+        return await manager.get_session(sid, INTERNAL)
     finally:
         await manager.shutdown()
         resources.close()

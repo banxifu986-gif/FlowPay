@@ -1,17 +1,21 @@
 """带追踪的聊天调用：请求先落库，再访问供应商。"""
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from time import perf_counter
 from typing import Literal
 
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCompletionToolParam
 
+from flowpay.core.errors import error_summary
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.event_log.store import new_id
 from flowpay.core.json import JsonObject
 
 from .contracts import ChatModel
+
+logger = logging.getLogger(__name__)
 
 
 class ChatClient:
@@ -78,7 +82,6 @@ class ChatClient:
             await self.tracer.emit("model.canceled", {}, call_id)
             raise
         except Exception as error:
-            await self.tracer.emit(
-                "model.error", {"error_type": type(error).__name__, "message": str(error)}, call_id
-            )
+            logger.exception("Model call failed: %s", call_id)
+            await self.tracer.emit("model.error", error_summary(error), call_id)
             raise

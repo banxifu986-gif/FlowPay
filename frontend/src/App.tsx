@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PanelLeftClose, AlertCircle, X } from 'lucide-react'
+import { PanelLeftClose, AlertCircle, LogOut, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -16,14 +16,41 @@ import { cn } from '@/lib/utils'
 import { EventDialog } from '@/components/event-dialog'
 import { SessionNavigation } from '@/components/session-navigation'
 import { ChatPanel } from '@/components/chat-panel'
+import { LoginPage } from '@/components/login-page'
 import { RunTrace } from '@/components/run-trace'
 import { useSessionCatalog } from '@/hooks/use-session-catalog'
 import { useSessionEvents } from '@/hooks/use-session-events'
 import { useRunActions } from '@/hooks/use-run-actions'
 import { useTrace } from '@/hooks/use-trace'
+import { auth, onUnauthorized, type Identity } from '@/lib/auth'
 
-// 页面根组件只负责布局、响应式切换与检查弹窗。
+// 根组件只做登录门禁：没有令牌/身份就停在登录页，工作区不发起任何业务请求。
 export default function App() {
+  const [identity, setIdentity] = useState<Identity | null>(() =>
+    auth.token() && auth.identity() ? auth.identity() : null,
+  )
+  useEffect(() => {
+    // 401 由请求层上报：清掉本地令牌并回登录页，工作区随之卸载。
+    onUnauthorized(() => {
+      auth.clear()
+      setIdentity(null)
+    })
+    return () => onUnauthorized(null)
+  }, [])
+  if (!identity) return <LoginPage onSignedIn={setIdentity} />
+  return (
+    <Workspace
+      identity={identity}
+      onSignOut={() => {
+        auth.clear()
+        setIdentity(null)
+      }}
+    />
+  )
+}
+
+// 工作区只负责布局、响应式切换与检查弹窗；数据边界全部由后端强制。
+function Workspace({ identity, onSignOut }: { identity: Identity; onSignOut: () => void }) {
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
   const catalog = useSessionCatalog(retry, setError)
@@ -111,6 +138,19 @@ export default function App() {
               {meta.model}
             </span>
           )}
+          {/* 身份与角色来自登录响应：商户只看自己的数据，展示只是说明不是边界。 */}
+          <span className="ml-auto flex shrink-0 items-center gap-2">
+            <Badge variant="secondary" className="px-2 py-0.5 text-[11px]">
+              {identity.role === 'merchant' ? '商户' : '内部'}
+            </Badge>
+            <span className="hidden truncate font-mono text-[11px] text-muted-foreground sm:inline">
+              {identity.username}
+            </span>
+            <Button variant="ghost" size="sm" onClick={onSignOut} className="gap-1 px-2">
+              <LogOut />
+              退出
+            </Button>
+          </span>
         </header>
         {error && (
           <Alert

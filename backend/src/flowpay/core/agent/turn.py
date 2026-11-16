@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -71,6 +72,9 @@ DISPUTE = (
     "回答里出现了这些编号，但本轮没有任何工具返回过它们：{names}。"
     "请改写回答：只引用工具实际返回的记录，或说明这一项无法确认。"
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -195,18 +199,18 @@ class AgentTurn:
                 [{"role": "user", "content": prompt}], output="internal"
             )
         except Exception as error:  # CancelledError 继承 BaseException，自然穿透。
+            logger.exception("Context compaction call failed")
             await self.runtime.tracer.emit(
-                "context.compaction_failed",
-                {"reason": type(error).__name__, "message": str(error)},
-                call_id,
+                "context.compaction_failed", {"reason": type(error).__name__}, call_id
             )
             return False
         self.usage_entries.append(from_completion(completion))
         try:
             text = answer_text(completion)
-        except ModelOutputError as error:
+        except ModelOutputError:
+            logger.exception("Context compaction output rejected")
             await self.runtime.tracer.emit(
-                "context.compaction_failed", {"reason": "output", "message": str(error)}, call_id
+                "context.compaction_failed", {"reason": "output"}, call_id
             )
             return False
         compacted, _, rounds = compact_messages(raw, groups, text, summary_budget)

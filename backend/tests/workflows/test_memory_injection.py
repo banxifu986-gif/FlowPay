@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from flowpay.core.auth import Principal
 from flowpay.core.config import Settings
 from flowpay.core.data_sources import DataSources
 from flowpay.core.event_log import EventStore
@@ -22,6 +23,7 @@ from flowpay.core.memory.store import MemoryStore
 from flowpay.dataset import dataset_path, snapshot_ready
 from flowpay.router import create_stage
 from flowpay.workflows.manual_loop import MEMORY_SECTION_HEADER
+from tests.core.principals import INTERNAL, MERCHANT
 
 from .fixtures import Model, Search, completion, conversation, grounded
 
@@ -50,6 +52,7 @@ def seed_note(tmp_path: Path) -> MemoryStore:
             note_id="note_seed",
             session_id="session_seed",
             workflow="multi-agent",
+            owner=MERCHANT.account_id or "",
             created_at="2026-11-15T09:00:00+00:00",
             keys=["pay_bg_001_0003"],
             conditions={"known": {}},
@@ -83,9 +86,15 @@ def make_multi_manager(
     return manager, resources
 
 
-async def run_turn(manager: SessionManager, sid: str, request_id: str, text: str) -> None:
-    """提交一轮消息并等待结束。"""
-    await manager.submit_message(sid, request_id, text)
+async def run_turn(
+    manager: SessionManager,
+    sid: str,
+    request_id: str,
+    text: str,
+    principal: Principal = MERCHANT,
+) -> None:
+    """提交一轮消息并等待结束；缺省按商户会话（记忆只对商户生效）。"""
+    await manager.submit_message(sid, request_id, text, principal)
     await manager.tasks[sid]
 
 
@@ -112,9 +121,9 @@ async def test_multi_agent_injects_memory_into_case_note(tmp_path: Path) -> None
     manager, resources = make_multi_manager(tmp_path, model, search, make_policy(), store)
     model.responses = [conversation("没有需要调查的任务。"), grounded("排查分支的回答。")]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(MERCHANT))["id"])
         await run_turn(manager, sid, "first", QUESTION)
-        view = await manager.get_session(sid)
+        view = await manager.get_session(sid, MERCHANT)
         assert require_text(view["status"]) == "completed"
         injected = request_texts(model.requests[0])
         assert MEMORY_SECTION_HEADER in injected
@@ -136,7 +145,7 @@ async def test_multi_agent_without_memory_keeps_requests_clean(tmp_path: Path) -
     manager, resources = make_multi_manager(tmp_path, model, search, None)
     model.responses = [conversation("没有需要调查的任务。"), grounded("排查分支的回答。")]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(MERCHANT))["id"])
         await run_turn(manager, sid, "first", QUESTION)
         for request in model.requests:
             assert MEMORY_SECTION_HEADER not in request_texts(request)
@@ -155,7 +164,7 @@ async def test_multi_agent_key_miss_emits_none_event(tmp_path: Path) -> None:
     manager, resources = make_multi_manager(tmp_path, model, search, make_policy(), store)
     model.responses = [conversation("没有需要调查的任务。"), grounded("排查分支的回答。")]
     try:
-        sid = require_text((await manager.create_session())["id"])
+        sid = require_text((await manager.create_session(MERCHANT))["id"])
         await run_turn(manager, sid, "first", "另一个账户 acct_other_9 的问题")
         for request in model.requests:
             assert MEMORY_SECTION_HEADER not in request_texts(request)
@@ -234,9 +243,9 @@ async def test_manual_loop_injects_and_extracts(
         completion(calls=[search_document("call_1", "webhook 重试策略")]),
         completion("上一轮排查过投递失败问题，本轮先看文档重试策略。"),
     ]
-    sid = require_text((await manager.create_session())["id"])
+    sid = require_text((await manager.create_session(MERCHANT))["id"])
     await run_turn(manager, sid, "first", QUESTION)
-    view = await manager.get_session(sid)
+    view = await manager.get_session(sid, MERCHANT)
     assert require_text(view["status"]) == "completed"
     injected = request_texts(model.requests[0])
     assert MEMORY_SECTION_HEADER in injected
@@ -244,7 +253,7 @@ async def test_manual_loop_injects_and_extracts(
     assert len(extracted) == 1
     assert require_object(extracted[0])["keys"] == 1
     # 新结论与种子键集完全相同 → 同键替换：库里仍一条，正文换成本轮抽取的。
-    hits = store.match_keys(["pay_bg_001_0003"], limit=5)
+    hits = store.match_keys(MERCHANT.account_id or "", ["pay_bg_001_0003"], limit=5)
     assert len(hits) == 1
     assert "最终回答：" in hits[0].body
 
@@ -258,9 +267,9 @@ async def test_manual_loop_waiting_user_skips_extraction(
     model.responses = [
         completion(calls=[ask_call("ask_1", ["environment"], "是生产还是沙箱环境？")])
     ]
-    sid = require_text((await manager.create_session())["id"])
+    sid = require_text((await manager.create_session(MERCHANT))["id"])
     await run_turn(manager, sid, "first", QUESTION)
-    view = await manager.get_session(sid)
+    view = await manager.get_session(sid, MERCHANT)
     assert require_text(view["status"]) == "waiting_user"
     skipped = [
         payload for kind, payload in events_of(manager, sid) if kind == "memory.extract_skipped"
@@ -275,12 +284,33 @@ async def test_manual_loop_no_findings_skips_extraction(
     """无查询动作的完成轮：发 extract_skipped(no_findings)，记忆库不变。"""
     manager, model, store = manual_runtime
     model.responses = [completion("直接回答，没有任何查询。")]
-    sid = require_text((await manager.create_session())["id"])
+    sid = require_text((await manager.create_session(MERCHANT))["id"])
     await run_turn(manager, sid, "first", QUESTION)
-    view = await manager.get_session(sid)
+    view = await manager.get_session(sid, MERCHANT)
     assert require_text(view["status"]) == "completed"
     skipped = [
         payload for kind, payload in events_of(manager, sid) if kind == "memory.extract_skipped"
     ]
     assert require_object(skipped[0])["reason"] == "no_findings"
-    assert store.match_keys(["pay_bg_001_0003"], limit=5)[0].body.startswith("此前结论")
+    assert store.match_keys(MERCHANT.account_id or "", ["pay_bg_001_0003"], limit=5)[
+        0
+    ].body.startswith("此前结论")
+
+
+async def test_internal_account_writes_and_reads_no_memory(tmp_path: Path) -> None:
+    """内部账号零记忆读写、零记忆事件：300 题基准不被历史结论污染（specs/005 US4）。"""
+    model, search = Model(), Search()
+    store = seed_note(tmp_path)
+    manager, _ = make_multi_manager(tmp_path, model, search, make_policy(), store)
+    model.responses = [conversation("没有需要调查的任务。"), grounded("排查分支的回答。")]
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await run_turn(manager, sid, "first", QUESTION, INTERNAL)
+        assert MEMORY_SECTION_HEADER not in request_texts(model.requests[0])
+        assert not [kind for kind, _ in events_of(manager, sid) if kind.startswith("memory.")]
+        # 记忆库保持原样：只有种子那条，没有内部会话写入。
+        hits = store.match_keys(MERCHANT.account_id or "", ["pay_bg_001_0003"], limit=5)
+        assert [item.note_id for item in hits] == ["note_seed"]
+        assert hits[0].body.startswith("此前结论")
+    finally:
+        await manager.shutdown()

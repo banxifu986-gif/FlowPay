@@ -18,6 +18,7 @@ from flowpay.core.execution.resources import RuntimeResources
 from flowpay.core.json import JsonObject
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.router import create_stage
+from tests.core.principals import INTERNAL
 
 from ..workflows.fixtures import Model, Search, completion, intent_call, tasks_call
 
@@ -47,10 +48,10 @@ def build_manager(
 
 async def submit_and_view(manager: SessionManager, message: str) -> SessionView:
     """提交一条消息并等待本轮结束，返回会话视图。"""
-    sid = (await manager.create_session())["id"]
-    await manager.submit_message(sid, "first", message)
+    sid = (await manager.create_session(INTERNAL))["id"]
+    await manager.submit_message(sid, "first", message, INTERNAL)
     await manager.tasks[sid]
-    view = await manager.get_session(sid)
+    view = await manager.get_session(sid, INTERNAL)
     assert view["status"] == "completed"
     return view
 

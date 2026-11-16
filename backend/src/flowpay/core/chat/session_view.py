@@ -26,6 +26,7 @@ def build_session_view(events: list[Event]) -> SessionView:
     if not events:
         raise SessionNotFound("Session not found")
     first = events[0]
+    stored_user = first["payload"].get("user_id")
     result: SessionView = {
         "id": first["session_id"],
         "title": "新会话",
@@ -33,6 +34,7 @@ def build_session_view(events: list[Event]) -> SessionView:
         "created_at": first["timestamp"],
         "updated_at": events[-1]["timestamp"],
         "last_seq": events[-1]["seq"],
+        "user_id": stored_user if isinstance(stored_user, str) else None,
         "workflow": TypeAdapter(WorkflowIdentity).validate_python(first["payload"]["workflow"]),
         "state": {},
         "messages": [],

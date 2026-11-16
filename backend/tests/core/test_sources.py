@@ -19,6 +19,7 @@ from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
 from flowpay.core.json import require_object, require_text
 from flowpay.core.knowledge import Collection
+from tests.core.principals import INTERNAL
 
 
 @pytest.fixture
@@ -168,10 +169,10 @@ async def test_run_pins_versions_and_records_source_results(
     settings = Settings(tmp_path, tmp_path)
     manager = SessionManager(EventStore(tmp_path / "sessions.sqlite"), Workflow(), settings)
     manager.resources = RuntimeResources(settings, source, manager.resources.knowledge)
-    sid = (await manager.create_session())["id"]
-    await manager.submit_message(sid, "one", "question")
+    sid = (await manager.create_session(INTERNAL))["id"]
+    await manager.submit_message(sid, "one", "question", INTERNAL)
     await manager.tasks[sid]
-    session = await manager.get_session(sid)
+    session = await manager.get_session(sid, INTERNAL)
     assert "config" in session["runs"][0]
     assert session["runs"][0]["config"]["data_sources"] == source.snapshot()
     assert any(e["type"] == "source.response" for e in manager.store.read(sid))
@@ -179,8 +180,8 @@ async def test_run_pins_versions_and_records_source_results(
     policy["release_id"] = "different"
     manager.resources = RuntimeResources(settings, DataSources(source.root, policy))
     with pytest.raises(Conflict, match="version changed"):
-        await manager.submit_message(sid, "two", "next")
-    assert len((await manager.get_session(sid))["runs"]) == 1
+        await manager.submit_message(sid, "two", "next", INTERNAL)
+    assert len((await manager.get_session(sid, INTERNAL))["runs"]) == 1
 
 
 def test_source_configuration_is_relative(tmp_path: Path) -> None:
@@ -238,14 +239,14 @@ async def test_knowledge_version_must_match_sources(
     )
     manager = SessionManager(EventStore(tmp_path / "sessions.sqlite"), Workflow(), settings)
     manager.resources = RuntimeResources(settings, source, manager.resources.knowledge)
-    sid = (await manager.create_session())["id"]
+    sid = (await manager.create_session(INTERNAL))["id"]
     with pytest.raises(Conflict, match="versions differ"):
-        await manager.submit_message(sid, "first", "question")
-    assert (await manager.get_session(sid))["runs"] == []
+        await manager.submit_message(sid, "first", "question", INTERNAL)
+    assert (await manager.get_session(sid, INTERNAL))["runs"] == []
     collection["dataset_release_id"] = source.policy["release_id"]
-    await manager.submit_message(sid, "first", "question")
+    await manager.submit_message(sid, "first", "question", INTERNAL)
     await manager.tasks[sid]
-    run = (await manager.get_session(sid))["runs"][0]
+    run = (await manager.get_session(sid, INTERNAL))["runs"][0]
     assert "config" in run
     assert require_object(run["config"]["knowledge"])["collection_id"] == "kb"
 
@@ -288,9 +289,9 @@ async def test_runtime_resources_reuses_reader_and_closes_on_shutdown(
         EventStore(tmp_path / "events.sqlite"), FixtureWorkflow(settings), settings
     )
     try:
-        sid = (await manager.create_session())["id"]
+        sid = (await manager.create_session(INTERNAL))["id"]
         for i in range(2):
-            await manager.submit_message(sid, str(i), "question")
+            await manager.submit_message(sid, str(i), "question", INTERNAL)
             await manager.tasks[sid]
         assert opened == ["test-reader"]
         assert reads == ["docs", "docs"]

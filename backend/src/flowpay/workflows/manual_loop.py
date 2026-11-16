@@ -538,11 +538,21 @@ class ManualLoopWorkflow:
             document_search_tool(search_documents),
             document_read_tool(read_document),
             *(
-                sql_tool(spec, run_sql, runtime.field_values("sql", spec.source))
+                sql_tool(
+                    spec,
+                    run_sql,
+                    runtime.field_values("sql", spec.source),
+                    runtime.scope_overrides,
+                )
                 for spec in SQL_TOOLS
             ),
             *(
-                log_tool(spec, run_logs, runtime.field_values("logs", spec.source))
+                log_tool(
+                    spec,
+                    run_logs,
+                    runtime.field_values("logs", spec.source),
+                    runtime.scope_overrides,
+                )
                 for spec in LOG_TOOLS
             ),
         )
