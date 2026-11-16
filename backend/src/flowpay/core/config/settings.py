@@ -63,6 +63,16 @@ class Settings:
     context_summary_char_budget: int = 4000
     # 调查报告产出端/汇总读取端预算（specs/003 P1，0=不截断）。
     context_report_char_budget: int = 4096
+    # manual-loop 简报 system 消息数封顶（specs/004 P2，0=现行为逐字不变）。
+    context_briefing_cap: int = 0
+
+    # 跨会话排查记忆（specs/004）：recall_char_budget > 0 启用整链路（抽取+召回+
+    # 注入+封顶），值为注入简报的记忆段落字符预算；缺省 0 = 关闭 = 现行为。
+    memory_recall_char_budget: int = 0
+    # 语义兜底召回候选数；> 0 时键未命中才发生嵌入调用，且要求 embedding 配置。
+    memory_semantic_limit: int = 0
+    # 记忆总量封顶，超出按 created_at 最旧淘汰。
+    memory_max_notes: int = 200
 
     # 保留复现所需的运行设置；认证环境变量的值不属于快照内容。
     def snapshot(self) -> JsonObject:

@@ -60,26 +60,35 @@ def is_summary_message(message: JsonObject | ChatCompletionMessageParam) -> bool
 
 
 def select_compaction_range(
-    messages: list[JsonObject], trigger_chars: int, keep_recent_rounds: int
+    messages: list[JsonObject],
+    trigger_chars: int,
+    keep_recent_rounds: int,
+    *,
+    force: bool = False,
 ) -> list[list[int]] | None:
     """返回待压缩整组的下标分组；不满足触发条件或无收益时返回 None。
 
     全函数：任何畸形输入返回 None，绝不抛异常。触发看消息流总体积（与投影
     同一字符口径）；保留最近 keep_recent_rounds 个完整交换（至少 1 个，切点
-    纪律），其余从最老开始整组压缩。
+    纪律），其余从最老开始整组压缩。force=True 跳过体积判定（reactive 补救
+    已确认超限，specs/004），但切点纪律与「无收益返回 None」不变。
     """
-    if trigger_chars <= 0 or not messages:
+    if (trigger_chars <= 0 and not force) or not messages:
         return None
     try:
-        return _select(messages, trigger_chars, keep_recent_rounds)
+        return _select(messages, trigger_chars, keep_recent_rounds, force=force)
     except Exception:
         return None
 
 
 def _select(
-    messages: list[JsonObject], trigger_chars: int, keep_recent_rounds: int
+    messages: list[JsonObject],
+    trigger_chars: int,
+    keep_recent_rounds: int,
+    *,
+    force: bool = False,
 ) -> list[list[int]] | None:
-    if sum(_chars(message) for message in messages) <= trigger_chars:
+    if not force and sum(_chars(message) for message in messages) <= trigger_chars:
         return None
     groups = _groups(messages)
     keep = max(1, keep_recent_rounds)

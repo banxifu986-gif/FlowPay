@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 from flowpay.core.chat.compaction import (
     KEEP_RECENT_ROUNDS,
@@ -25,6 +25,7 @@ from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.knowledge.passages import EVIDENCE_MAX_CHARS, EVIDENCE_MAX_PASSAGES, PassageSet
 from flowpay.core.llm.chat import ChatModel
 from flowpay.core.llm.chat.client import ChatClient
+from flowpay.core.llm.chat.http_error import ModelHTTPError, is_context_over_limit
 from flowpay.core.llm.chat.messages import MessageLog, ModelOutputError, answer_text
 from flowpay.core.tools import Tool, Toolbox, ToolInputError
 
@@ -163,6 +164,22 @@ class AgentTurn:
         groups = select_compaction_range(raw, policy.compaction_trigger_chars, KEEP_RECENT_ROUNDS)
         if groups is None:
             return
+        await self._compact_groups(raw, groups, policy.summary_char_budget)
+
+    async def _compact_groups(
+        self,
+        raw: list[JsonObject],
+        groups: list[list[int]],
+        summary_budget: int,
+        *,
+        event: str = "context.compacted",
+        trigger: str | None = None,
+    ) -> bool:
+        """对给定分组执行摘要压缩并替换消息流；返回是否成功。
+
+        摘要调用失败或输出不可用 → 记事件并返回 False，调用方决定跳过还是
+        上抛（主动压缩跳过，reactive 补救上抛原错误）。usage 照常入账。
+        """
         dropped = [raw[index] for group in groups for index in group]
         previous: str | None = None
         for message in raw:
@@ -171,7 +188,7 @@ class AgentTurn:
                 if isinstance(value, str):
                     previous = value
                 break
-        prompt = summary_user_prompt(dropped, previous, policy.summary_char_budget)
+        prompt = summary_user_prompt(dropped, previous, summary_budget)
         call_id: str | None = None
         try:
             completion, call_id = await self.chat.call(
@@ -183,7 +200,7 @@ class AgentTurn:
                 {"reason": type(error).__name__, "message": str(error)},
                 call_id,
             )
-            return
+            return False
         self.usage_entries.append(from_completion(completion))
         try:
             text = answer_text(completion)
@@ -191,20 +208,41 @@ class AgentTurn:
             await self.runtime.tracer.emit(
                 "context.compaction_failed", {"reason": "output", "message": str(error)}, call_id
             )
-            return
-        compacted, _, rounds = compact_messages(
-            raw, groups, text, policy.summary_char_budget
-        )
+            return False
+        compacted, _, rounds = compact_messages(raw, groups, text, summary_budget)
         before = len(json.dumps(raw, ensure_ascii=False))
         self.messages.messages = compacted
-        await self.runtime.tracer.emit(
-            "context.compacted",
-            {
-                "before_chars": before,
-                "after_chars": len(json.dumps(compacted, ensure_ascii=False)),
-                "rounds": rounds,
-            },
-            call_id,
+        payload: JsonObject = {
+            "before_chars": before,
+            "after_chars": len(json.dumps(compacted, ensure_ascii=False)),
+            "rounds": rounds,
+        }
+        if trigger is not None:
+            payload["trigger"] = trigger
+        await self.runtime.tracer.emit(event, payload, call_id)
+        return True
+
+    async def _force_compact(self) -> bool:
+        """绕过触发线强制压缩检查点消息流；无收益（已是最小形态）返回 False。
+
+        供 reactive 补救使用：API 已确认上下文超限，体积判定失去意义，
+        但切点纪律（保留最近完整交换）不变。
+        """
+        policy = self.context_policy
+        if policy is None:
+            return False
+        raw = cast("list[JsonObject]", self.messages.messages)
+        groups = select_compaction_range(
+            raw, policy.compaction_trigger_chars, KEEP_RECENT_ROUNDS, force=True
+        )
+        if groups is None:
+            return False
+        return await self._compact_groups(
+            raw,
+            groups,
+            policy.summary_char_budget,
+            event="context.reactive_compacted",
+            trigger="over_limit",
         )
 
     async def think(self) -> Reply:
@@ -213,7 +251,9 @@ class AgentTurn:
         输出不符合协议时（截断的工具调用、空正文、被拒绝）在剩余预算内把待纠正正文
         和纠正要求一起回传重试，纠正草稿不写入检查点。预算耗尽前的最后一次请求不再
         提供工具并要求直接作答；结果通过 Reply.forced 区分"模型认为够了"和"被要求收尾"。
-        网络、数据库异常与取消继续上抛。进入循环前先做一次检查点压缩（specs/003）。
+        网络、数据库异常与取消继续上抛；API 报上下文超限时先强制压缩再重试一次
+        （specs/004 reactive compact，仅 remember=True 且有策略时）。进入循环前先做
+        一次检查点压缩（specs/003）。
         """
         await self._compact_if_needed()
         correction: list[ChatCompletionMessageParam] = []
@@ -229,10 +269,13 @@ class AgentTurn:
                 if self.context_policy is not None
                 else self.messages.messages
             )
-            completion, call_id = await self.chat.call(
-                [*projected, *correction, *closing],
-                [] if forced else self.toolbox.definitions(),
-            )
+            try:
+                completion, call_id = await self.chat.call(
+                    [*projected, *correction, *closing],
+                    [] if forced else self.toolbox.definitions(),
+                )
+            except ModelHTTPError as error:
+                completion, call_id = await self._reactive_compact(error, forced, correction)
             self.usage_entries.append(from_completion(completion))
             try:
                 reply = read_reply(completion, call_id, forced)
@@ -243,6 +286,39 @@ class AgentTurn:
             self.messages.add_assistant_message(completion.choices[0].message)
             return reply
         raise ModelOutputError("模型调用预算内没有得到可用的输出")
+
+    async def _reactive_compact(
+        self,
+        error: ModelHTTPError,
+        forced: bool,
+        correction: list[ChatCompletionMessageParam],
+    ) -> tuple[ChatCompletion, str]:
+        """上下文超限的补救：强制压缩检查点消息流后重试一次（specs/004）。
+
+        触发条件：超限形态 ∧ 有策略 ∧ remember=True（worker 与直连节点没有可
+        压缩的检查点消息流，单次构造超限属配置预算问题）。压缩失败 → 跳过补救
+        并上抛原错误；重试失败 → 上抛重试自身的异常，不再有第二次补救。
+        重试的模型调用照常计预算与用量。
+        """
+        if self.context_policy is None or not self.remember or not is_context_over_limit(error):
+            raise error
+        if not self.budget.may_think():
+            # 超限发生在最后一次预算调用上（大上下文在收尾拍最容易触发）：
+            # 没有重试额度，压缩白做，直接上抛原错误，由管理器记 run.failed。
+            raise error
+        if not await self._force_compact():
+            # 已经压不动（只剩保留轮）仍超限：说明配置的预算远小于供应商上限语义，
+            # 重试只会原样失败，直接上抛。
+            raise error
+        self.budget.spend_model_call()
+        projected = project_messages(self.messages.messages, self.context_policy)
+        closing: list[ChatCompletionMessageParam] = (
+            [{"role": "system", "content": CLOSING}] if forced else []
+        )
+        return await self.chat.call(
+            [*projected, *correction, *closing],
+            [] if forced else self.toolbox.definitions(),
+        )
 
     async def perform(self, action: Action) -> Observation:
         """执行模型选择的动作；参数错误作为可纠正的观察回传，工具内部故障继续上抛。"""

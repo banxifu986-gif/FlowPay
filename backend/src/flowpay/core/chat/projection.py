@@ -47,6 +47,9 @@ class ContextPolicy:
     summary_char_budget: int = 4000
     # P1：调查报告产出端与汇总读取端共用一个预算（0=不截断）。
     report_char_budget: int = 4096
+    # P2（specs/004）：manual-loop 简报 system 消息数封顶；0 = 现行为逐字不变。
+    # 压缩/投影的可删组只含 assistant+tool，简报不在其中，封顶由写路径负责。
+    briefing_cap: int = 0
 
 
 def project_messages(

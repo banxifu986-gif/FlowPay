@@ -15,6 +15,9 @@ from flowpay.core.knowledge.client import KnowledgeClient
 from flowpay.core.knowledge.contracts import Collection, DocumentRetriever, VectorStore
 from flowpay.core.llm.embedding import EmbeddingClient
 from flowpay.core.llm.embedding.openai_embedding import OpenAiEmbeddingModel
+from flowpay.core.memory.contracts import MemoryPolicy
+from flowpay.core.memory.recall import TracedMemoryRecall
+from flowpay.core.memory.store import MemoryStore
 
 from .errors import Conflict
 
@@ -45,17 +48,21 @@ class RuntimeResources:
         knowledge: KnowledgeReader | None = None,
         vectors: VectorStore | None = None,
         retriever: Callable[[Tracer], DocumentRetriever] | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_policy: MemoryPolicy | None = None,
     ):
         """保存配置、只读数据源和知识连接。
 
         检索客户端按轮装配，因为追踪是按轮的；retriever 用于注入替代实现，
-        测试和演示据此避免依赖真实向量库。
+        测试和演示据此避免依赖真实向量库。记忆库缺省关闭（policy 为 None）。
         """
         self.settings: Settings = settings
         self.sources: DataSources | None = sources
         self.knowledge: KnowledgeReader | None = knowledge
         self.vectors: VectorStore | None = vectors
         self.retriever: Callable[[Tracer], DocumentRetriever] | None = retriever
+        self.memory_store: MemoryStore | None = memory_store
+        self.memory_policy: MemoryPolicy | None = memory_policy
         self.source_client: SourceClient | None = SourceClient(sources) if sources else None
 
     def document_retriever(self, tracer: Tracer) -> DocumentRetriever | None:
@@ -82,8 +89,52 @@ class RuntimeResources:
             if settings.knowledge_collection_id
             else None
         )
+        # 跨会话记忆缺省关闭：recall_char_budget > 0 才打开记忆库并装配策略。
+        memory_policy = (
+            MemoryPolicy(
+                recall_char_budget=settings.memory_recall_char_budget,
+                semantic_limit=settings.memory_semantic_limit,
+                max_notes=settings.memory_max_notes,
+            )
+            if settings.memory_recall_char_budget > 0
+            else None
+        )
+        memory_store = (
+            MemoryStore(settings.data_dir / "memory.sqlite", settings.memory_max_notes)
+            if memory_policy is not None
+            else None
+        )
         # 检索与版本核对共用同一个连接池；管理器结束全部任务后再统一关闭。
-        return cls(settings, sources, knowledge, knowledge)
+        return cls(
+            settings,
+            sources,
+            knowledge,
+            knowledge,
+            memory_store=memory_store,
+            memory_policy=memory_policy,
+        )
+
+    def memory_embedder(self, tracer: Tracer) -> EmbeddingClient | None:
+        """记忆语义链路的嵌入客户端；semantic_limit>0 且配置了嵌入时才可用。
+
+        写入侧（抽取落库）与查询侧（召回兜底）共用同一向量空间身份。
+        """
+        if self.memory_policy is None or self.memory_policy.semantic_limit <= 0:
+            return None
+        if self.settings.embedding is None:
+            return None
+        return EmbeddingClient(OpenAiEmbeddingModel(self.settings.embedding), tracer)
+
+    def memory_recall(self, tracer: Tracer) -> TracedMemoryRecall | None:
+        """为一轮运行装配带追踪的记忆召回；语义兜底仅在配置了嵌入时可用。"""
+        if self.memory_store is None or self.memory_policy is None:
+            return None
+        return TracedMemoryRecall(
+            self.memory_store,
+            tracer,
+            self.memory_embedder(tracer),
+            self.memory_policy.semantic_limit,
+        )
 
     def close(self) -> None:
         """关闭本对象持有的知识读取器；调用前应结束所有使用它的 Run。"""

@@ -10,10 +10,12 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import ClassVar, Literal
 
+from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from flowpay.core.agent import AgentTurn, Budget
-from flowpay.core.chat.projection import ContextPolicy
+from flowpay.core.chat.projection import ContextPolicy, clip_text
+from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import LogToolSpec, SqlToolSpec, log_tool, sql_tool
 from flowpay.core.execution.contracts import TurnInput, TurnResult
@@ -30,6 +32,7 @@ from flowpay.core.knowledge.tools import (
 )
 from flowpay.core.llm.chat import ChatModel
 from flowpay.core.llm.chat.messages import ModelOutputError
+from flowpay.core.memory.contracts import MemoryPolicy, RecalledNote
 from flowpay.core.tools import Tool, ToolInputError
 
 SYSTEM = """你是 FlowPay 技术支持助手，正在和用户多轮排查同一个问题。
@@ -256,6 +259,91 @@ def briefing(case: Case, revision: Revision) -> str | None:
     return "\n".join(lines)
 
 
+# 记忆段落的开头话术：声明记忆只是背景，防止历史会话替用户发号施令（specs/004）。
+MEMORY_SECTION_HEADER = (
+    "历史会话排查记忆（供参考；与本轮已知条件或工具返回冲突时，一律以本轮为准）："
+)
+
+
+def memory_section(notes: list[RecalledNote], budget: int) -> str | None:
+    """把召回的历史排查结论编成简报段落；无命中或预算非正返回 None。
+
+    超预算整段截断并保留显式标记；调用点决定段落并入哪条消息。
+    """
+    if not notes or budget <= 0:
+        return None
+    lines = [MEMORY_SECTION_HEADER, *(f"- {note.body}" for note in notes)]
+    return clip_text("\n".join(lines), budget)
+
+
+async def recall_note_section(
+    user_message: str, case: Case, runtime: AgentRuntime, policy: MemoryPolicy | None
+) -> str | None:
+    """召回与本次问题相关的历史排查记忆并编成简报段落；未启用或零命中返回 None。
+
+    召回键是本轮消息与已知条件里出现的记录编号；召回实现自带失败降级，
+    这里不需要再兜一层。两个阶段共用同一注入语义：段落并入当轮简报消息。
+    """
+    if runtime.memory is None or policy is None:
+        return None
+    keys = sorted({*record_ids(user_message), *case.known.values()})
+    notes = await runtime.memory.recall(keys, user_message)
+    return memory_section(notes, policy.recall_char_budget)
+
+
+# 简报封顶（specs/004 US6）：压缩/投影的可删组只含 assistant+tool，简报 system
+# 消息会随轮次无界累积，封顶由写路径在每轮追加简报后执行。
+BRIEFING_PREFIX = "已知条件"
+MERGED_BRIEFING_HEADER = "已知条件（历史简报合并；按时间序，最新在最后）："
+MERGED_BRIEFING_CAP = 4000
+
+
+def condense_briefings(
+    messages: list[ChatCompletionMessageParam], cap: int
+) -> list[ChatCompletionMessageParam]:
+    """简报 system 消息超过 cap 条时把最旧的若干条合并为一条；cap<=0 原样返回。
+
+    识别按内容前缀（合并条目同样带「已知条件」前缀，可继续参与后续合并）。
+    合并条目按流内顺序拼接正文并整体截断到 MERGED_BRIEFING_CAP，替换在被合并
+    第一条的原位置——改口链（「改为」「作废」）按时间序天然保留。返回新列表，
+    输入不被修改；与压缩正交：合并条目仍是不可删 system，组合不变量由测试钉住。
+    """
+    if cap <= 0:
+        return messages
+    indexes = [index for index, message in enumerate(messages) if _is_briefing(message)]
+    if len(indexes) <= cap:
+        return messages
+    drop = len(indexes) - cap + 1  # 合并 drop 条为一条后，简报数恰好等于 cap。
+    merged_batch = indexes[:drop]
+    merged_content = clip_text(
+        MERGED_BRIEFING_HEADER
+        + "\n"
+        + "\n".join(str(messages[index].get("content")) for index in merged_batch),
+        MERGED_BRIEFING_CAP,
+    )
+    merged: ChatCompletionMessageParam = {"role": "system", "content": merged_content}
+    result = [
+        merged if index == merged_batch[0] else message
+        for index, message in enumerate(messages)
+        if index not in merged_batch[1:]
+    ]
+    return result
+
+
+def _is_briefing(message: ChatCompletionMessageParam) -> bool:
+    """按内容前缀识别简报消息；system 提示词等其他 system 消息不受影响。
+
+    记忆-only 简报（首轮 case.known 为空、只有记忆段时）以「历史会话排查记忆」
+    开头，同样计入封顶，否则它是一条永不参与合并的跨轮累积消息。
+    """
+    content = message.get("content")
+    return (
+        message.get("role") == "system"
+        and isinstance(content, str)
+        and (content.startswith(BRIEFING_PREFIX) or content.startswith(MEMORY_SECTION_HEADER))
+    )
+
+
 class AskUserArguments(BaseModel):
     """模型发起追问时要说清缺哪几项，以及用什么话去问。
 
@@ -338,17 +426,22 @@ class ManualLoopWorkflow:
         model: ChatModel,
         prepare_query: Callable[[str], str],
         context_policy: ContextPolicy | None = None,
+        memory_policy: MemoryPolicy | None = None,
     ) -> None:
         """接收已装配的模型与查询格式函数，不创建外部连接。"""
         self.model: ChatModel = model
         self.prepare_query: Callable[[str], str] = prepare_query
         self.context_policy: ContextPolicy | None = context_policy
+        self.memory_policy: MemoryPolicy | None = memory_policy
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
         """先合并本轮带来的条件，再跑调查循环；模型选择追问时本轮就此结束。"""
         case = Case.restore(turn.saved_state.get("case"))
         revision = case.apply(conditions_in(turn.user_message))
         done = restore_queried(turn.saved_state.get("queried"))
+        # 查询键封顶（specs/004 US7）：淘汰唯一代价是该查询可能重查一次；
+        # manual-loop 无跨轮结论清单，referenced 为空集，纯按序保尾。
+        cap_query_keys(done, set(), QUERY_KEYS_CAP)
         agent = AgentTurn.start(
             turn,
             runtime,
@@ -357,8 +450,17 @@ class ManualLoopWorkflow:
             Budget(self.max_model_calls, self.max_tool_calls),
             context_policy=self.context_policy,
         )
-        if note := briefing(case, revision):
+        note = briefing(case, revision)
+        section = await recall_note_section(turn.user_message, case, runtime, self.memory_policy)
+        if section:
+            note = f"{note}\n\n{section}" if note else section
+        if note:
             agent.messages.add_system_message(note)
+            # 简报封顶（specs/004 US6）：cap=0 时函数原样返回，现行为逐字不变。
+            if self.context_policy is not None and self.context_policy.briefing_cap > 0:
+                agent.messages.messages = condense_briefings(
+                    agent.messages.messages, self.context_policy.briefing_cap
+                )
         actions: list[ToolAction] = []
         # 追问记在列表里而不是一个可空变量：赋值发生在闭包内，
         # 用列表既省掉 nonlocal，也让"推迟到回合结束"这件事看得见。
@@ -446,7 +548,13 @@ class ManualLoopWorkflow:
         )
         while agent.may_think():
             reply = await agent.think()
-            state: dict[str, object] = {"case": case, "queried": sorted(done), "actions": actions}
+            # 动作清单封顶保最新（specs/004 US7）：该字段当前无恢复侧消费方，
+            # 封顶只为防检查点无界累积。
+            state: dict[str, object] = {
+                "case": case,
+                "queried": sorted(done),
+                "actions": actions[-ACTIONS_CAP:],
+            }
             if reply.is_answer:
                 if await agent.disputed(reply):
                     continue
@@ -474,6 +582,31 @@ class ManualLoopWorkflow:
         agent.budget.spend_tool_call()
         done.add(key)
         return None
+
+
+# 查询键与 checkpoint 动作的封顶常量（specs/004 US7，模块常量不进配置面）。
+# 淘汰查询键的唯一代价是该查询可能重查一次；seen（记录编号防线）不在此列——
+# 淘汰历史编号会把工具真实返回过的引用误判为编造，直接削弱 DISPUTE 核对。
+QUERY_KEYS_CAP = 200
+ACTIONS_CAP = 50
+
+
+def cap_query_keys(done: set[str], referenced: set[str], cap: int) -> set[str]:
+    """把查询键集合封顶到 cap：referenced 全保留，其余按 sorted 序保尾部。
+
+    referenced 是当前 findings/actions 引用的查询键（与 claim 键同构）——它们的
+    结论仍在简报里被引用，淘汰会诱导模型重查甚至误判。集合原地修改并返回。
+    """
+    if cap <= 0 or len(done) <= cap:
+        return done
+    overflow = len(done) - cap
+    droppable = sorted(key for key in done if key not in referenced)[:overflow]
+    if len(droppable) < overflow:
+        # referenced 自身超过 cap：保 referenced 的尾部（findings 已有 FINDINGS_CAP，
+        # 现实不可达，仅守住集合语义）。
+        droppable += sorted(referenced)[: overflow - len(droppable)]
+    done.difference_update(droppable)
+    return done
 
 
 def restore_queried(state: object) -> set[str]:

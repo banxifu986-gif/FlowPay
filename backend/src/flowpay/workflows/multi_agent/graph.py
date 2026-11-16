@@ -33,7 +33,16 @@ from flowpay.core.knowledge.passages import (
     PassageSet,
 )
 from flowpay.core.llm.chat import ChatModel
-from flowpay.workflows.manual_loop import Case, briefing, conditions_in, restore_queried
+from flowpay.core.memory.contracts import MemoryPolicy
+from flowpay.workflows.manual_loop import (
+    QUERY_KEYS_CAP,
+    Case,
+    briefing,
+    cap_query_keys,
+    conditions_in,
+    recall_note_section,
+    restore_queried,
+)
 
 from .intent import CLASSIFY_PROMPT, DEFAULT_INTENT, SET_INTENT, conditions_route, read_intent
 from .investigation import (
@@ -57,6 +66,11 @@ from .state import (
 def branch(state: GraphState) -> str:
     """route 之后的条件边：按意图进对应分支。"""
     return state["intent"]
+
+
+# doc 工具的 finding 记名与 claim 记账名的对应（doc_worker 两处 claim 用短名，
+# findings 用工具全名）；不在表中的 tool 名原样使用。
+DOC_TOOL_CLAIM = {"search_documents": "search", "read_document": "read"}
 
 
 def fold_finding_record_ids(shared: SharedTurn) -> None:
@@ -169,12 +183,14 @@ class MultiAgentWorkflow:
         model: ChatModel,
         prepare_query: Callable[[str], str],
         context_policy: ContextPolicy | None = None,
+        memory_policy: MemoryPolicy | None = None,
         max_concurrency: int | None = None,
     ) -> None:
         """接收已装配的模型与查询格式函数；max_concurrency 仅测试用（串行化 Send）。"""
         self.model: ChatModel = model
         self.prepare_query: Callable[[str], str] = prepare_query
         self.context_policy: ContextPolicy | None = context_policy
+        self.memory_policy: MemoryPolicy | None = memory_policy
         self.max_concurrency: int | None = max_concurrency
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
@@ -193,7 +209,24 @@ class MultiAgentWorkflow:
         revision = shared.case.apply(conditions_in(turn.user_message))
         discard_stale(shared, revision.changed)
         fold_finding_record_ids(shared)
+        # 查询键封顶（specs/004 US7）：当前 findings 引用的键全保留（它们的结论
+        # 仍在简报里被引用），其余按序保尾淘汰。seen（编号防线）不动。
+        # referenced 必须与 claim 记账键同构：doc 工具的 finding 名与 claim 名不同
+        # （search_documents/read_document vs search/read，investigation.py）。
+        # merged 合并条目无法还原成员键，其成员键按未引用处理——淘汰的代价只是
+        # 该 doc 查询可能重查一次，方向是浪费不是错误。
+        referenced: set[str] = set()
+        for finding in shared.findings:
+            claim_tool = DOC_TOOL_CLAIM.get(finding.tool, finding.tool)
+            referenced.add(f"{claim_tool}:{finding.target.casefold()}")
+        cap_query_keys(shared.done, referenced, QUERY_KEYS_CAP)
         note = briefing(shared.case, revision)
+        # 记忆段并入 case_note：单点注入自动携带到 plan/worker/synthesize（specs/004）。
+        section = await recall_note_section(
+            turn.user_message, shared.case, runtime, self.memory_policy
+        )
+        if section:
+            note = f"{note}\n\n{section}" if note else section
         # 编造引用核对的材料：用户本轮给出的编号，加上 case 里已有的编号字段值。
         shared.seen.update(record_ids(turn.user_message))
         shared.seen.update(shared.case.known.values())

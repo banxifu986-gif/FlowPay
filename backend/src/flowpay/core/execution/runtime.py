@@ -11,14 +11,15 @@ from flowpay.core.json import JsonObject
 from flowpay.core.knowledge.contracts import DocumentRetriever, Passage
 from flowpay.core.llm.chat import ChatModel
 from flowpay.core.llm.chat.client import ChatClient
+from flowpay.core.memory.contracts import MemoryRecall
 from flowpay.core.tools import Tool, Toolbox
 
 
 class AgentRuntime:
     """把本轮可用的能力交给工作流，并保证每次调用都被记录。
 
-    chat 和 toolbox 返回已绑定本轮追踪的调用入口；knowledge 与 sources 是可选能力，
-    未配置时为 None。检索顺序、调用次数与结束条件都由阶段决定。
+    chat 和 toolbox 返回已绑定本轮追踪的调用入口；knowledge、sources 与 memory
+    是可选能力，未配置时为 None。检索顺序、调用次数与结束条件都由阶段决定。
     """
 
     def __init__(
@@ -27,12 +28,14 @@ class AgentRuntime:
         sources: SourceClient | None = None,
         knowledge: DocumentRetriever | None = None,
         collection_id: str | None = None,
+        memory: MemoryRecall | None = None,
     ):
         """绑定本轮追踪与已装配的只读能力。"""
         self.tracer: Tracer = tracer
         self.sources: SourceClient | None = sources
         self.knowledge: DocumentRetriever | None = knowledge
         self.collection_id: str | None = collection_id
+        self.memory: MemoryRecall | None = memory
 
     def chat(self, model: ChatModel) -> ChatClient:
         """把一个模型包成带记录的调用入口；阶段可以为不同用途选择不同模型。"""

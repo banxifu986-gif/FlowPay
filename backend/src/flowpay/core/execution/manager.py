@@ -5,7 +5,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from flowpay.core.agent.trace import Tracer
 from flowpay.core.chat.session_view import build_session_view
@@ -14,12 +14,14 @@ from flowpay.core.config import Settings
 from flowpay.core.event_log import EventStoreProtocol
 from flowpay.core.event_log.contracts import EventItems, RuntimeLockCheck
 from flowpay.core.event_log.store import new_id
-from flowpay.core.execution.contracts import TurnInput, Workflow
+from flowpay.core.execution.contracts import TurnInput, TurnResult, Workflow
 from flowpay.core.execution.errors import Conflict
 from flowpay.core.execution.resources import RuntimeResources
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.types import TurnRecord, TurnStarted, WorkflowIdentity
 from flowpay.core.json import JsonObject, to_json_object
+from flowpay.core.memory.contracts import MemoryNote
+from flowpay.core.memory.extract import extract_note
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +251,7 @@ class SessionManager:
             self.resources.source_client,
             self.resources.document_retriever(tracer),
             self.settings.knowledge_collection_id,
+            self.resources.memory_recall(tracer),
         )
         try:
             outcome = await self.workflow.run(value, runtime)
@@ -269,6 +272,11 @@ class SessionManager:
                 ],
                 run_id,
             )
+            # 记忆抽取是已提交轮次的副产物：失败只记事件，绝不改写运行终态。
+            try:
+                await self._maybe_extract_memory(session_id, outcome, tracer)
+            except Exception:
+                logger.exception("Memory extraction failed: %s", run_id)
         except asyncio.CancelledError:
             await self._record_terminal_event(
                 tracer,
@@ -287,6 +295,70 @@ class SessionManager:
             )
         finally:
             self.tasks.pop(session_id, None)
+
+    # 抽取放在 run.finished 提交之后：记忆是会话的副产物，任何失败都不影响结果。
+    async def _maybe_extract_memory(
+        self, session_id: str, outcome: TurnResult, tracer: Tracer
+    ) -> None:
+        """按策略从本轮检查点确定性抽取排查结论并落库；失败只记事件。
+
+        策略未启用时静默返回；waiting_user / 无实质进展以 extract_skipped 区分，
+        存储条件与抽取细节见 core/memory/extract.py（specs/004）。
+        """
+        policy = self.resources.memory_policy
+        store = self.resources.memory_store
+        if policy is None or store is None:
+            return
+        try:
+            if outcome.status != "completed":
+                await tracer.emit("memory.extract_skipped", {"reason": "waiting_user"})
+                return
+            note = await asyncio.to_thread(
+                extract_note, session_id, self.workflow.id, outcome.saved_state, outcome.text
+            )
+            if note is None:
+                await tracer.emit("memory.extract_skipped", {"reason": "no_findings"})
+                return
+            note = await self._embed_note(note, tracer)
+            dropped = await asyncio.to_thread(store.save, note)
+            await tracer.emit(
+                "memory.extracted",
+                {
+                    "note_id": note.note_id,
+                    "keys": len(note.keys),
+                    "chars": note.body_chars,
+                    "workflow": note.workflow,
+                },
+            )
+            if dropped:
+                await tracer.emit(
+                    "memory.compacted",
+                    {"dropped": dropped, "remaining": policy.max_notes},
+                )
+        except Exception as error:
+            await tracer.emit(
+                "memory.extract_failed",
+                {"error_type": type(error).__name__, "message": str(error)},
+            )
+
+    async def _embed_note(self, note: MemoryNote, tracer: Tracer) -> MemoryNote:
+        """语义兜底开启时给笔记正文生成向量；嵌入失败降级为无向量落库。
+
+        无向量的笔记检索不到语义召回（键召回不受影响），抽取本身不因嵌入故障
+        失败——排查结论落库优先于语义增强（specs/004 US4）。
+        """
+        embedder = self.resources.memory_embedder(tracer)
+        if embedder is None:
+            return note
+        try:
+            batch = await embedder.embed([note.body])
+        except Exception as error:
+            await tracer.emit(
+                "memory.extract_failed",
+                {"error_type": f"embedding:{type(error).__name__}", "message": str(error)},
+            )
+            return note
+        return replace(note, embedding=batch.vectors[0])
 
     # 终态持久化失败时关闭新运行入口，不能把存储故障伪装成正常完成。
     async def _record_terminal_event(self, tracer: Tracer, kind: str, payload: JsonObject):

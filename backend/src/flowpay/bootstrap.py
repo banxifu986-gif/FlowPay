@@ -7,6 +7,7 @@ from flowpay.core.config import Settings
 from flowpay.core.execution.contracts import Workflow
 from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
 from flowpay.core.llm.embedding.ollama import retrieval_input
+from flowpay.core.memory.contracts import MemoryPolicy
 from flowpay.router import create_stage, resolve_stage
 
 
@@ -38,8 +39,21 @@ def create_workflow(settings: Settings) -> Workflow:
             compaction_trigger_chars=settings.context_compaction_trigger_chars,
             summary_char_budget=settings.context_summary_char_budget,
             report_char_budget=settings.context_report_char_budget,
+            briefing_cap=settings.context_briefing_cap,
         )
         if settings.context_char_budget > 0 and settings.context_tool_result_budget > 0
         else None
     )
-    return create_stage(stage, OpenAiChatModel(settings.model), retrieval_input, context_policy)
+    # 跨会话记忆缺省关闭：recall_char_budget > 0 才装配策略（specs/004）。
+    # 语义兜底依赖嵌入配置，而上方 RAG 前置校验已保证 embedding 存在；
+    # recall 层（resources.memory_recall）仍有独立兜底，缺配置时退化为键匹配。
+    memory_policy = None
+    if settings.memory_recall_char_budget > 0:
+        memory_policy = MemoryPolicy(
+            recall_char_budget=settings.memory_recall_char_budget,
+            semantic_limit=settings.memory_semantic_limit,
+            max_notes=settings.memory_max_notes,
+        )
+    return create_stage(
+        stage, OpenAiChatModel(settings.model), retrieval_input, context_policy, memory_policy
+    )

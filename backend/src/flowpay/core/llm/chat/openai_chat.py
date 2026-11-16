@@ -17,6 +17,7 @@ from flowpay.core.config import ModelSettings
 from flowpay.core.json import JsonObject, parse_json, require_object, require_text, to_json_object
 from flowpay.core.llm.chat import ChunkSink
 
+from .http_error import ModelHTTPError
 from .stream import ChatStreamAccumulator
 
 
@@ -139,13 +140,9 @@ class OpenAiChatModel:
                         if content:
                             await emit({"kind": "content_delta", "text": content})
             except APIStatusError as error:
-                await emit(
-                    {
-                        "kind": "http_error",
-                        "status": error.status_code,
-                        "body": (await error.response.aread()).decode(errors="replace"),
-                    }
-                )
-                # 不向上层传播携带认证请求对象的 SDK 异常。
-                raise RuntimeError(f"Model HTTP {error.status_code}") from None
+                body = (await error.response.aread()).decode(errors="replace")
+                await emit({"kind": "http_error", "status": error.status_code, "body": body})
+                # 不向上层传播携带认证请求对象的 SDK 异常；类型化封装让调用方
+                # 能识别上下文超限形态（specs/004 reactive compact）。
+                raise ModelHTTPError(error.status_code, body) from None
         return accumulator.finish()
