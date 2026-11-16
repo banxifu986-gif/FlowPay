@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS memory_notes (
     body_chars INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_notes (created_at);
-CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_notes (owner, created_at);
 """
 
 _NOTE_COLUMNS = (
@@ -82,7 +81,8 @@ class MemoryStore:
             }
             if "owner" not in columns:
                 db.execute("ALTER TABLE memory_notes ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
-                db.execute(_OWNER_INDEX_SQL)
+            # 旧库补列后才能建索引；新库在这里同样只跑一次幂等语句。
+            db.execute(_OWNER_INDEX_SQL)
 
     def save(self, note: MemoryNote) -> int:
         """写入一条记忆并在本 owner 内执行总量封顶；返回本轮被淘汰的条数。

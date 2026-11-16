@@ -5,7 +5,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import ExitStack, asynccontextmanager
-from typing import Annotated, ClassVar, cast
+from typing import Annotated, ClassVar, Literal, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -18,7 +18,7 @@ from flowpay.core.config import Settings
 from flowpay.core.event_log.runtime import open_store
 from flowpay.core.event_log.types import Event
 from flowpay.core.execution.contracts import Workflow
-from flowpay.core.execution.errors import Conflict
+from flowpay.core.execution.errors import Conflict, QuotaExceeded
 from flowpay.core.execution.manager import SessionManager
 from flowpay.core.execution.resources import RuntimeResources
 from flowpay.core.execution.types import TurnRecord
@@ -52,6 +52,21 @@ class DeleteSessionsResult(BaseModel):
     """返回实际删除的会话 ID；不存在的会话不影响幂等重试。"""
 
     deleted_ids: list[str]
+
+
+class FeedbackBody(BaseModel):
+    """一轮回答的反馈；附言可选，不允许额外字段。"""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+    run_id: str = Field(min_length=1, max_length=128)
+    rating: Literal["up", "down"]
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class FeedbackResult(BaseModel):
+    """反馈已追加到事件日志；不返回正文，避免把反馈带回对话流。"""
+
+    accepted: bool = True
 
 
 class WorkflowInfo(BaseModel):
@@ -182,6 +197,16 @@ def create_app(
     async def conflict(_: Request, error: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=409)
 
+    async def quota_exceeded(_: Request, error: Exception) -> JSONResponse:
+        # 429 与 401/403 共用 detail/code 结构；retry_after 只用于客户端退避。
+        quota = cast(QuotaExceeded, error)
+        headers = {"Retry-After": str(quota.retry_after)} if quota.retry_after > 0 else None
+        return JSONResponse(
+            {"detail": quota.detail, "code": quota.code},
+            status_code=429,
+            headers=headers,
+        )
+
     async def health() -> JSONResponse:
         healthy = not get_manager().storage_error
         return JSONResponse(
@@ -272,6 +297,17 @@ def create_app(
             deleted_ids=await get_manager().delete_sessions(body.session_ids, principal)
         )
 
+    async def feedback(
+        session_id: str,
+        body: FeedbackBody,
+        principal: Annotated[Principal, Depends(current_principal)],
+    ) -> FeedbackResult:
+        """追加一轮反馈事件；归属与 run_id 校验在管理器内完成，反馈不进消息流。"""
+        await get_manager().record_feedback(
+            session_id, body.run_id, body.rating, body.comment, principal
+        )
+        return FeedbackResult()
+
     async def events(
         session_id: str,
         principal: Annotated[Principal, Depends(current_principal)],
@@ -341,6 +377,7 @@ def create_app(
 
     app.exception_handler(SessionNotFound)(not_found)
     app.exception_handler(Conflict)(conflict)
+    app.exception_handler(QuotaExceeded)(quota_exceeded)
     app.exception_handler(AuthError)(auth_failed)
     app.post(LOGIN_PATH)(login)
     app.get("/api/health")(health)
@@ -353,6 +390,7 @@ def create_app(
     app.post("/api/sessions/{session_id}/messages", status_code=202)(message)
     app.post("/api/sessions/{session_id}/continue", status_code=202)(resume)
     app.post("/api/sessions/{session_id}/cancel")(cancel)
+    app.post("/api/sessions/{session_id}/feedback", status_code=202)(feedback)
     app.get("/api/sessions/{session_id}/events")(events)
     app.get("/api/sessions/{session_id}/export")(export)
     app.get("/api/sessions/{session_id}/stream")(stream)

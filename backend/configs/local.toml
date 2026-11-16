@@ -12,6 +12,37 @@ accounts_path = "./accounts.toml"
 host = "127.0.0.1"
 port = 8000
 
+# 用量守卫（specs/006）：UTC 日回合预算、商户并发与全局日上限。
+# 商户并发 1 = 同商户第二个并行请求直接 429；0 关闭对应项。默认值待真机校准。
+quota_merchant_daily_turns = 200
+# 内部账号个体日上限：防止单个内部账号吃满全局额度、锁死商户到 UTC 午夜。
+quota_internal_daily_turns = 500
+quota_global_daily_turns = 5000
+quota_merchant_concurrency = 1
+
+# 失败分类后的恢复策略（specs/006 US2）：可重试失败额外尝试与线性退避基数。
+failure_retry_attempts = 2
+failure_retry_delay_seconds = 1.0
+
+# 混合检索（specs/006 US4）：pg_trgm 关键词路 + 向量路 RRF，零新增依赖。
+knowledge_hybrid = true
+knowledge_keyword_limit = 20
+knowledge_vector_limit = 20
+knowledge_rrf_k = 60
+
+# 上下文管理默认启用（specs/006 US3）：003/004 smoke 校准值。
+# 投影与压缩同线（30000），正常会话不触发压缩；单条旧工具结果 1600 起占位。
+context_char_budget = 30000
+context_tool_result_budget = 1600
+context_compaction_trigger_chars = 30000
+context_summary_char_budget = 4000
+context_report_char_budget = 4096
+context_briefing_cap = 6
+# 跨会话记忆按商户开启；内部账号由管理器按角色关闭（基准保持纯净）。
+memory_recall_char_budget = 2000
+memory_semantic_limit = 2
+memory_max_notes = 200
+
 # 聊天模型。任何 OpenAI 兼容服务都可以，地址、模型名和密钥都能在 .env 里覆盖：
 # FLOWPAY_MODEL_BASE_URL、FLOWPAY_MODEL_NAME、FLOWPAY_MODEL_API_KEY。
 [model]

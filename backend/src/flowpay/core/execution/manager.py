@@ -6,6 +6,7 @@ import logging
 from collections import defaultdict
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 
 from flowpay.core.agent.trace import Tracer
 from flowpay.core.auth import FORBIDDEN, AuthError, Principal
@@ -18,7 +19,8 @@ from flowpay.core.event_log import EventStoreProtocol
 from flowpay.core.event_log.contracts import EventItems, RuntimeLockCheck
 from flowpay.core.event_log.store import new_id
 from flowpay.core.execution.contracts import TurnInput, TurnResult, Workflow
-from flowpay.core.execution.errors import Conflict
+from flowpay.core.execution.errors import Conflict, QuotaExceeded
+from flowpay.core.execution.failures import classify_failure
 from flowpay.core.execution.resources import RuntimeResources
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.types import TurnRecord, TurnStarted, WorkflowIdentity
@@ -68,6 +70,9 @@ class SessionManager:
         self.settings: Settings = settings
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # 用量守卫：配额预留与在跑计数都在管理器内存里，事件日志负责跨进程的日计量。
+        self._quota_lock: asyncio.Lock = asyncio.Lock()
+        self._active_merchants: defaultdict[str, int] = defaultdict(int)
         self.shutting_down: bool = False
         self.storage_error: bool = False
         self._owns_resources: bool = resources is None
@@ -185,10 +190,17 @@ class SessionManager:
                 return previous_run
 
             input_message = self._resolve_run_input(session, content, resume=resume)
-            prepared = await self._prepare_run(
-                session, request_id, input_message, principal, resume=resume
-            )
-            receipt = await self._persist_run(session_id, prepared)
+            reserved = await self._reserve_quota(principal)
+            try:
+                prepared = await self._prepare_run(
+                    session, request_id, input_message, principal, resume=resume
+                )
+                receipt = await self._persist_run(session_id, prepared)
+            except BaseException:
+                # 预留后没有走到任务登记：立刻归还并发名额，避免配额泄漏。
+                if reserved:
+                    await self._release_quota(principal)
+                raise
             # 此处到登记之间没有 await，取消不会留下已提交却没有执行者的运行。
             self.tasks[session_id] = asyncio.create_task(
                 self._execute(
@@ -196,6 +208,71 @@ class SessionManager:
                 )
             )
             return receipt
+
+    async def _reserve_quota(self, principal: Principal) -> bool:
+        """按主体预留一次运行名额；超限抛结构化 QuotaExceeded。
+
+        商户查并发与日回合；全局日上限对内部账号同样生效。任何一项为 0 表示该项关闭。
+        日计量来自事件日志，并发计数只在本进程内，两者都在配额锁内核对后预留。
+        """
+        settings = self.settings
+        limits = (
+            settings.quota_merchant_daily_turns,
+            settings.quota_internal_daily_turns,
+            settings.quota_global_daily_turns,
+            settings.quota_merchant_concurrency,
+        )
+        if not any(limits):
+            return False
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        retry_after = _seconds_until_utc_midnight()
+        async with self._quota_lock:
+            if principal.is_merchant:
+                if (
+                    settings.quota_merchant_concurrency > 0
+                    and self._active_merchants[principal.username]
+                    >= settings.quota_merchant_concurrency
+                ):
+                    raise QuotaExceeded(
+                        "同一商户已有正在运行的回合，请等待本轮结束再提交。",
+                        code="concurrency_limit",
+                        retry_after=60,
+                    )
+                if settings.quota_merchant_daily_turns > 0:
+                    used = await asyncio.to_thread(
+                        self.store.daily_run_count, day, principal.username
+                    )
+                    if used >= settings.quota_merchant_daily_turns:
+                        raise QuotaExceeded(
+                            "今日回合预算已用尽，请明天再试。", retry_after=retry_after
+                        )
+            if not principal.is_merchant and settings.quota_internal_daily_turns > 0:
+                used = await asyncio.to_thread(self.store.daily_run_count, day, principal.username)
+                if used >= settings.quota_internal_daily_turns:
+                    raise QuotaExceeded(
+                        "当前内部账号今日回合预算已用尽，请明天再试。",
+                        retry_after=retry_after,
+                    )
+            if settings.quota_global_daily_turns > 0:
+                used = await asyncio.to_thread(self.store.daily_run_count, day)
+                if used >= settings.quota_global_daily_turns:
+                    raise QuotaExceeded(
+                        "服务今日总回合预算已用尽，请明天再试。", retry_after=retry_after
+                    )
+            if principal.is_merchant:
+                self._active_merchants[principal.username] += 1
+        return principal.is_merchant
+
+    async def _release_quota(self, principal: Principal) -> None:
+        """归还商户并发名额；内部账号从未占用，静默返回。"""
+        if not principal.is_merchant:
+            return
+        async with self._quota_lock:
+            remaining = self._active_merchants[principal.username] - 1
+            if remaining > 0:
+                self._active_merchants[principal.username] = remaining
+            else:
+                self._active_merchants.pop(principal.username, None)
 
     async def _ensure_runtime_available(self) -> None:
         """检查存储锁连接和管理器状态；关闭或存储异常时抛 Conflict 拒绝新任务。"""
@@ -318,30 +395,76 @@ class SessionManager:
             scope_overrides=self._scope_overrides(principal),
             document_audience=self._document_audience(principal),
         )
-        try:
-            outcome = await self.workflow.run(value, runtime)
-            if outcome.status not in {"completed", "waiting_user"}:
-                raise ValueError("Invalid workflow outcome")
-            await self.store.aappend(
-                session_id,
-                [
-                    (
-                        "message.assistant",
-                        {
-                            "content": outcome.text,
-                            "evidence": [to_json_object(p) for p in outcome.evidence],
-                            **({"usage": to_json_object(outcome.usage)} if outcome.usage else {}),
-                        },
-                    ),
-                    ("run.finished", {"status": outcome.status, "state": outcome.saved_state}),
-                ],
-                run_id,
-            )
-            # 记忆抽取是已提交轮次的副产物：失败只记事件，绝不改写运行终态。
+        outcome: TurnResult | None = None
+        failure: JsonObject | None = None
+        canceled = False
+        attempt = 0
+        while outcome is None and failure is None and not canceled:
             try:
-                await self._maybe_extract_memory(session_id, outcome, tracer, owner)
-            except Exception:
-                logger.exception("Memory extraction failed: %s", run_id)
+                outcome = await self.workflow.run(value, runtime)
+                if outcome.status not in {"completed", "waiting_user"}:
+                    raise ValueError("Invalid workflow outcome")
+            except asyncio.CancelledError:
+                canceled = True
+            except Exception as error:
+                # 失败分类决定恢复策略：可重试类别按线性退避再执行；其余直接终态。
+                info = classify_failure(error)
+                logger.exception("Run failed: %s", run_id)
+                if info.retryable and attempt < self.settings.failure_retry_attempts:
+                    attempt += 1
+                    await tracer.emit(
+                        "run.retry",
+                        {
+                            "category": info.category,
+                            "attempt": attempt,
+                            "max_attempts": self.settings.failure_retry_attempts,
+                        },
+                    )
+                    await asyncio.sleep(self.settings.failure_retry_delay_seconds * attempt)
+                    continue
+                failure = {
+                    **error_summary(error),
+                    "category": info.category,
+                    "message": info.message,
+                }
+        try:
+            if canceled:
+                await self._record_terminal_event(
+                    tracer,
+                    "run.interrupted" if self.shutting_down else "run.canceled",
+                    {"reason": "shutdown" if self.shutting_down else "user_requested"},
+                )
+            elif failure is not None:
+                await self._record_terminal_event(tracer, "run.failed", failure)
+            else:
+                assert outcome is not None
+                await self.store.aappend(
+                    session_id,
+                    [
+                        (
+                            "message.assistant",
+                            {
+                                "content": outcome.text,
+                                "evidence": [to_json_object(p) for p in outcome.evidence],
+                                **(
+                                    {"usage": to_json_object(outcome.usage)}
+                                    if outcome.usage
+                                    else {}
+                                ),
+                            },
+                        ),
+                        (
+                            "run.finished",
+                            {"status": outcome.status, "state": outcome.saved_state},
+                        ),
+                    ],
+                    run_id,
+                )
+                # 记忆抽取是已提交轮次的副产物：失败只记事件，绝不改写运行终态。
+                try:
+                    await self._maybe_extract_memory(session_id, outcome, tracer, owner)
+                except Exception:
+                    logger.exception("Memory extraction failed: %s", run_id)
         except asyncio.CancelledError:
             await self._record_terminal_event(
                 tracer,
@@ -349,10 +472,20 @@ class SessionManager:
                 {"reason": "shutdown" if self.shutting_down else "user_requested"},
             )
         except Exception as error:
-            logger.exception("Run failed: %s", run_id)
-            await self._record_terminal_event(tracer, "run.failed", error_summary(error))
+            logger.exception("Run commit failed: %s", run_id)
+            info = classify_failure(error)
+            await self._record_terminal_event(
+                tracer,
+                "run.failed",
+                {
+                    **error_summary(error),
+                    "category": info.category,
+                    "message": info.message,
+                },
+            )
         finally:
             self.tasks.pop(session_id, None)
+            await self._release_quota(principal)
 
     @staticmethod
     def _scope_overrides(principal: Principal) -> dict[str, str]:
@@ -461,6 +594,46 @@ class SessionManager:
             self.storage_error = True
             logger.exception("Event persistence failed; new runs disabled")
 
+    async def record_feedback(
+        self,
+        session_id: str,
+        run_id: str,
+        rating: str,
+        comment: str | None,
+        principal: Principal,
+    ) -> None:
+        """追加一条反馈事件；只进日志，不写会话消息或检查点，因此不污染后续上下文。
+
+        归属按会话检查，run_id 必须属于该会话；商户不能评价他人会话（404 不泄漏）。
+        """
+        self._require_binding(principal)
+        async with self.locks[session_id]:
+            view = await self.get_session(session_id, principal)
+            target = next((run for run in view["runs"] if run["id"] == run_id), None)
+            if target is None:
+                raise Conflict("Feedback target run is not part of this session")
+            if target["status"] == "running":
+                raise Conflict("Feedback is only accepted after the turn finishes")
+            # 同一 (会话, 轮次, 主体) 只追加一次：重复提交返回成功但不写新事件。
+            # 主体写进载荷，跨主体不互相挡——append-only 语义保持不变。
+            history = await asyncio.to_thread(self.store.read, session_id)
+            for event in history:
+                payload = event["payload"]
+                if (
+                    event["type"] == "feedback.received"
+                    and payload.get("run_id") == run_id
+                    and payload.get("user") == principal.username
+                ):
+                    return
+            payload: JsonObject = {
+                "run_id": run_id,
+                "rating": rating,
+                "user": principal.username,
+            }
+            if comment and comment.strip():
+                payload["comment"] = comment.strip()
+            await self.store.aappend(session_id, [("feedback.received", payload)], run_id)
+
     async def cancel_run(self, session_id: str, principal: Principal):
         """取消当前协程并等待退出，再核对是否仍需补写取消事件。
 
@@ -528,3 +701,10 @@ class SessionManager:
             except asyncio.CancelledError:
                 await task
                 raise
+
+
+def _seconds_until_utc_midnight() -> int:
+    """距下一个 UTC 日边界的秒数；用于 429 的 Retry-After，不依赖本地时区。"""
+    now = datetime.now(UTC)
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(1, int((tomorrow - now).total_seconds()))

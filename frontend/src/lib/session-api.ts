@@ -67,6 +67,12 @@ export const sessionApi = {
   resumeRun: (id: string, requestId: string) =>
     request(`/sessions/${id}/continue`, 'POST', { request_id: requestId }),
   cancelRun: (id: string) => request(`/sessions/${id}/cancel`, 'POST', {}),
+  feedback: (id: string, runId: string, rating: 'up' | 'down', comment?: string) =>
+    request<{ accepted: boolean }>(`/sessions/${id}/feedback`, 'POST', {
+      run_id: runId,
+      rating,
+      ...(comment ? { comment } : {}),
+    }),
   // SSE 走 Authorization 请求头（specs/005）：EventSource 无法带头，所以订阅改 fetch 流。
   stream: async (id: string, after: number, signal: AbortSignal): Promise<Response> => {
     const response = await fetch(`/api/sessions/${id}/stream?after=${after}`, {

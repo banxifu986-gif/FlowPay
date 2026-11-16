@@ -11,7 +11,7 @@ from flowpay.core.json import JsonObject, require_object, to_json_object
 from flowpay.core.llm.embedding import EmbeddingClient
 from flowpay.core.llm.embedding.settings import same_vector_space
 
-from .contracts import Passage, VectorStore
+from .contracts import HybridConfig, Passage, VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +19,22 @@ logger = logging.getLogger(__name__)
 class KnowledgeClient:
     """提供有日志的知识构建与检索能力，不决定业务查询策略。"""
 
-    def __init__(self, store: VectorStore, embeddings: EmbeddingClient, tracer: EventSink):
-        """接收向量存储、嵌入客户端与本轮追踪；存储连接的生命周期由调用方负责。"""
+    def __init__(
+        self,
+        store: VectorStore,
+        embeddings: EmbeddingClient,
+        tracer: EventSink,
+        hybrid: HybridConfig | None = None,
+    ):
+        """接收向量存储、嵌入客户端与本轮追踪；hybrid=None 保持纯向量路径。
+
+        混合检索只在装配层开启（生产配置）；直接构造客户端的测试仍看到原有
+        相似度分数与排序，不被 RRF 分数改写。
+        """
         self.store: VectorStore = store
         self.embeddings: EmbeddingClient = embeddings
         self.tracer: EventSink = tracer
+        self.hybrid: HybridConfig | None = hybrid
 
     # 已成功入库的批次不会重算；外部请求成功但入库失败的批次重试时可能再次请求。
     async def embed_pending(self, collection_id: str) -> int:
@@ -94,9 +105,22 @@ class KnowledgeClient:
             # 查询文本和文档分块必须处于同一向量空间；前面已核对完整模型身份。
             # 这里不会自动改写问题或拼接业务提示，那些策略由 workflows 决定。
             batch = await self.embeddings.embed([text])
-            result = await asyncio.to_thread(
-                self.store.search, collection_id, batch, limit, filters
-            )
+            if self.hybrid is None:
+                result = await asyncio.to_thread(
+                    self.store.search, collection_id, batch, limit, filters
+                )
+            else:
+                result = await asyncio.to_thread(
+                    self.store.search_hybrid,
+                    collection_id,
+                    batch,
+                    text,
+                    limit,
+                    filters,
+                    keyword_limit=self.hybrid.keyword_limit,
+                    vector_limit=self.hybrid.vector_limit,
+                    rrf_k=self.hybrid.rrf_k,
+                )
             # 事件载荷保留完整溯源；只有交给模型的那一份会被投影成四个字段。
             await self.tracer.emit(
                 "knowledge.response",

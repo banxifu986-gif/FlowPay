@@ -177,6 +177,16 @@ export function chatMessages(events: TraceEvent[]): ChatMessageView[] {
   // 路由与缺口反馈用 output:"internal" 标记；这些调用同样花 token，单独计数便于对照。
   const internalCalls = new Set<string>()
   const messages: ChatMessageView[] = []
+  // 反馈只从事件读取；它不是聊天消息，也不会回到模型上下文。
+  const feedbackByRun = new Map<string, { rating: 'up' | 'down'; comment: string }>()
+  for (const event of events) {
+    if (event.type !== 'feedback.received') continue
+    const runId = textValue(event.payload.run_id)
+    const rating =
+      event.payload.rating === 'down' ? 'down' : event.payload.rating === 'up' ? 'up' : null
+    if (runId && rating)
+      feedbackByRun.set(runId, { rating, comment: textValue(event.payload.comment) })
+  }
   const usageOf = (runId: string | null) => {
     const usage = usageByRun.get(runId) ?? emptyUsage()
     usageByRun.set(runId, usage)
@@ -215,11 +225,13 @@ export function chatMessages(events: TraceEvent[]): ChatMessageView[] {
     messages.push({
       event_id: event.event_id,
       timestamp: event.timestamp,
+      runId: event.run_id,
       type: event.type,
       payload: {
         content,
         available: assistant ? available : [],
         usage: assistant ? usageByRun.get(event.run_id) : undefined,
+        feedback: assistant && event.run_id ? feedbackByRun.get(event.run_id) : undefined,
       },
     })
   }

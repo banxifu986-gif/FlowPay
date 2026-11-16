@@ -12,6 +12,8 @@ import {
   Square,
   ArrowUp,
   User,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -51,11 +53,17 @@ export function ChatPanel({
   status: string
   connection: ConnectionStatus
   loading: boolean
-  actions: Pick<RunActions, 'pending' | 'submitMessage' | 'resumeRun' | 'cancelRun'>
+  actions: Pick<
+    RunActions,
+    'pending' | 'submitMessage' | 'resumeRun' | 'cancelRun' | 'submitFeedback'
+  >
   inspect: Inspect
 }) {
   // 草稿和滚动属于聊天界面；网络重试 ID 由操作 hook 持有。
   const [draft, setDraft] = useState('')
+  // 反馈附言只属于一条消息；提交后由事件回显，不写入草稿。
+  const [noteFor, setNoteFor] = useState<string | null>(null)
+  const [note, setNote] = useState('')
   const draftSession = useRef(active)
   const { pending } = actions
   const running = status === 'running'
@@ -182,6 +190,64 @@ export function ChatPanel({
                   <MarkdownContent text={message.payload.content} />
                 )}
                 {message.payload.usage && <UsageLine usage={message.payload.usage} />}
+                {message.type === 'message.assistant' && message.runId && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {message.payload.feedback ? (
+                      <span className="text-[10px] text-muted-foreground">
+                        {message.payload.feedback.rating === 'up' ? '已标记有帮助' : '已标记待改进'}
+                        {message.payload.feedback.comment
+                          ? `：${message.payload.feedback.comment}`
+                          : ''}
+                      </span>
+                    ) : (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={pending}
+                          onClick={() => actions.submitFeedback(message.runId!, 'up')}
+                        >
+                          <ThumbsUp className="size-3" />
+                          有帮助
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={pending}
+                          onClick={() => {
+                            setNoteFor(noteFor === message.runId ? null : message.runId)
+                            setNote('')
+                          }}
+                        >
+                          <ThumbsDown className="size-3" />
+                          待改进
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                )}
+                {noteFor === message.runId && (
+                  <div className="mt-2 flex gap-2">
+                    <Textarea
+                      className="min-h-8 text-xs"
+                      aria-label="反馈附言"
+                      placeholder="可选：哪里需要改进？"
+                      value={note}
+                      onChange={(event) => setNote(event.target.value)}
+                    />
+                    <Button
+                      size="sm"
+                      disabled={pending}
+                      onClick={() => {
+                        if (message.runId) actions.submitFeedback(message.runId, 'down', note)
+                        setNoteFor(null)
+                        setNote('')
+                      }}
+                    >
+                      提交
+                    </Button>
+                  </div>
+                )}
                 {!!message.payload.available.length && (
                   <details className="mt-4 text-xs text-muted-foreground">
                     <summary className="cursor-pointer">

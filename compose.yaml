@@ -110,6 +110,14 @@ services:
     ports:
       - "127.0.0.1:5173:5173"
 
+  # 内网上线形态的反向代理位置（specs/006 US6）：本轮只预留，不实现。
+  # 真正部署时在这里加入 nginx/caddy 服务，把 443 终结 TLS 后转发到 frontend/backend，
+  # 并保留 Authorization 头；当前直接访问 127.0.0.1:8000/5173。
+  # reverse-proxy:
+  #   image: nginx:alpine
+  #   depends_on: [backend, frontend]
+  #   ports: ["443:443"]
+
   # 嵌入服务，必需：数据包只带文档向量，用户每次提问都要现场把问题嵌成向量。
   # 不对外发布 11434，避免和宿主机已经装着的 Ollama 抢端口；后端走服务网络访问。
   ollama:

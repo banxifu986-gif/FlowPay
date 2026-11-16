@@ -79,6 +79,22 @@ class Settings:
     # 记忆总量封顶，超出按 created_at 最旧淘汰。
     memory_max_notes: int = 200
 
+    # 用量守卫（specs/006）：按 UTC 日计 run.started；0 = 关闭。
+    # 默认值实施时定，待 smoke/真机校准后回填；商户并发 1 表示第二请求直接 429。
+    quota_merchant_daily_turns: int = 200
+    quota_internal_daily_turns: int = 500
+    quota_global_daily_turns: int = 5000
+    quota_merchant_concurrency: int = 1
+    # 可重试失败（超时/限流/模型 5xx）的额外尝试数与线性退避基数。
+    failure_retry_attempts: int = 2
+    failure_retry_delay_seconds: float = 1.0
+    # 混合检索（specs/006 US4）：关键词路 + 向量路 RRF；测试直接构造
+    # KnowledgeClient 时默认走纯向量，因此该开关只影响装配层。
+    knowledge_hybrid: bool = True
+    knowledge_keyword_limit: int = 20
+    knowledge_vector_limit: int = 20
+    knowledge_rrf_k: int = 60
+
     # 保留复现所需的运行设置；认证环境变量的值不属于快照内容。
     def snapshot(self) -> JsonObject:
         """返回可序列化的运行配置，供 run.started 固定本轮设置。

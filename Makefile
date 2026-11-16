@@ -90,3 +90,6 @@ demo: ## 起确定性契约后端，只验协议不跑正式阶段（需先 make
 
 smoke: ## 对着已在跑的后端验 HTTP/SSE：断线回放、取消与继续
 	@$(with-env) $(VENV) scripts/smoke_runtime.py
+
+smoke-launch: ## 006 全链路冒烟：登录 → 提问 → SSE → 反馈（需后端已起）
+	@$(with-env) $(VENV) scripts/smoke_006_launch.py

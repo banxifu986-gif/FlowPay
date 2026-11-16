@@ -7,6 +7,7 @@ export type RunActions = {
   submitMessage: (content: string) => Promise<boolean>
   resumeRun: () => Promise<boolean>
   cancelRun: () => Promise<boolean>
+  submitFeedback: (runId: string, rating: 'up' | 'down', comment?: string) => Promise<boolean>
 }
 
 type Submission = {
@@ -112,11 +113,19 @@ export function useRunActions(options: {
       await refreshAfterAcceptance()
     })
   }
+
+  async function submitFeedback(runId: string, rating: 'up' | 'down', comment?: string) {
+    if (!sessionId) return false
+    return perform(async () => {
+      await sessionApi.feedback(sessionId, runId, rating, comment)
+    })
+  }
   return {
     pending: pending || !!options.blocked,
     createSession,
     submitMessage,
     resumeRun,
     cancelRun,
+    submitFeedback,
   }
 }

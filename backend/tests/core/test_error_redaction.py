@@ -67,6 +67,9 @@ async def test_run_failed_event_hides_internal_detail(tmp_path: Path) -> None:
     finally:
         await manager.shutdown()
     failed = next(event for event in events if event["type"] == "run.failed")
-    assert failed["payload"] == {"error_type": "RuntimeError"}
+    # specs/006：终态增加分类与友好文案；异常类别仍是唯一来自异常本身的信息。
+    assert failed["payload"]["error_type"] == "RuntimeError"
+    assert failed["payload"]["category"] == "other"
+    assert failed["payload"]["message"]
     assert "postgresql://" not in str(events)
     assert "db.internal" not in str(events)

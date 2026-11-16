@@ -12,7 +12,12 @@ from flowpay.core.config import Settings
 from flowpay.core.data_sources import DataSources, SourceClient
 from flowpay.core.json import JsonObject
 from flowpay.core.knowledge.client import KnowledgeClient
-from flowpay.core.knowledge.contracts import Collection, DocumentRetriever, VectorStore
+from flowpay.core.knowledge.contracts import (
+    Collection,
+    DocumentRetriever,
+    HybridConfig,
+    VectorStore,
+)
 from flowpay.core.llm.embedding import EmbeddingClient
 from flowpay.core.llm.embedding.openai_embedding import OpenAiEmbeddingModel
 from flowpay.core.memory.contracts import MemoryPolicy
@@ -72,7 +77,16 @@ class RuntimeResources:
         if self.vectors is None or self.settings.embedding is None:
             return None
         embeddings = EmbeddingClient(OpenAiEmbeddingModel(self.settings.embedding), tracer)
-        return KnowledgeClient(self.vectors, embeddings, tracer)
+        hybrid = (
+            HybridConfig(
+                keyword_limit=self.settings.knowledge_keyword_limit,
+                vector_limit=self.settings.knowledge_vector_limit,
+                rrf_k=self.settings.knowledge_rrf_k,
+            )
+            if self.settings.knowledge_hybrid
+            else None
+        )
+        return KnowledgeClient(self.vectors, embeddings, tracer, hybrid)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> RuntimeResources:

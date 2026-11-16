@@ -67,14 +67,19 @@ export function addEmbeddingUsage(usage: UsageView, payload: JsonRecord): void {
   usage.embeddingCalls += 1
 }
 
+export type FeedbackView = { rating: 'up' | 'down'; comment: string }
+
 export type ChatMessageView = {
   event_id: string
   timestamp: string
+  runId: string | null
   type: string
   payload: {
     content: string
     /** 本轮可查看的全部片段：本轮取回的，加上后端随回答交来的。 */
     available: EvidenceView[]
     usage?: UsageView
+    /** 只用于界面回显；反馈不进入模型上下文。 */
+    feedback?: FeedbackView
   }
 }

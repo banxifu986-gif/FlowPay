@@ -337,6 +337,94 @@ class PostgresVectorStore:
             ).fetchall()
             return [_passage(row) for row in rows]
 
+    def search_hybrid(
+        self,
+        collection_id: str,
+        query: EmbeddedBatch,
+        text: str,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+        *,
+        keyword_limit: int = 20,
+        vector_limit: int = 20,
+        rrf_k: int = 60,
+    ) -> list[Passage]:
+        """关键词路（pg_trgm）与向量路双召回，再用 RRF 融合（specs/006 US4）。
+
+        两条路都先限定同一集合与同一元数据过滤；融合只按 Passage.id 去重并重排，
+        返回对象的 source 字段仍是原片段的完整溯源，不因融合而改写。
+        关键词路对 ASCII 错误码/单号做大小写不敏感精确加分，中文按 trigram 相似度。
+        """
+        if not 1 <= limit <= 100 or len(query.vectors) != 1:
+            raise ValueError("Search needs one query vector and limit 1..100")
+        if not 1 <= keyword_limit <= 100 or not 1 <= vector_limit <= 100:
+            raise ValueError("Hybrid candidate limits must be 1..100")
+        if rrf_k <= 0:
+            raise ValueError("RRF constant must be positive")
+        if filters is not None:
+            require_object(filters)
+        condition, filter_values = metadata_condition(filters)
+        with self.pool.connection() as db:
+            collection = self._read_collection(db, collection_id)
+            if collection["status"] != "ready":
+                raise ValueError("Collection is not ready")
+            if not same_vector_space(collection["build_config"]["embedding"], query.spec):
+                raise ValueError("Query embedding configuration differs from collection")
+            validate_vector(query.vectors[0], collection["dimensions"])
+            vector_rows = db.execute(
+                cast(
+                    "LiteralString",
+                    f"""
+                    WITH candidates AS MATERIALIZED (
+                      SELECT c.collection_id,c.doc_id,c.chunk_no,c.content,c.source_locator,
+                             c.embedding,d.title,d.source_path,d.source_sha256,d.metadata
+                      FROM chunks c JOIN documents d USING(collection_id,doc_id)
+                      WHERE c.collection_id=%s{condition}
+                    )
+                    SELECT collection_id,doc_id,chunk_no,content,source_locator,title,source_path,
+                           source_sha256,metadata,1-(embedding <=> %s::vector) AS score
+                    FROM candidates ORDER BY score DESC,doc_id,chunk_no LIMIT %s
+                    """,
+                ),
+                (collection_id, *filter_values, json.dumps(query.vectors[0]), vector_limit),
+            ).fetchall()
+            # ILIKE 模式里的通配符按字面转义；查询文本本身仍作为绑定参数进入语句。
+            pattern = keyword_like_pattern(text)
+            keyword_rows = db.execute(
+                cast(
+                    "LiteralString",
+                    f"""
+                    WITH candidates AS MATERIALIZED (
+                      SELECT c.collection_id,c.doc_id,c.chunk_no,c.content,c.source_locator,
+                             d.title,d.source_path,d.source_sha256,d.metadata,
+                             (c.content ILIKE %s ESCAPE '\\') AS exact,
+                             similarity(c.content, %s) AS sim
+                      FROM chunks c JOIN documents d USING(collection_id,doc_id)
+                      WHERE c.collection_id=%s{condition}
+                    )
+                    SELECT collection_id,doc_id,chunk_no,content,source_locator,title,source_path,
+                           source_sha256,metadata,
+                           greatest(sim, CASE WHEN exact THEN 1.0 ELSE sim END) AS score
+                    FROM candidates WHERE exact OR sim >= %s
+                    ORDER BY score DESC,doc_id,chunk_no LIMIT %s
+                    """,
+                ),
+                (
+                    pattern,
+                    text,
+                    collection_id,
+                    *filter_values,
+                    KEYWORD_SIMILARITY_THRESHOLD,
+                    keyword_limit,
+                ),
+            ).fetchall()
+            return reciprocal_rank_fusion(
+                [_passage(row) for row in vector_rows],
+                [_passage(row) for row in keyword_rows],
+                limit,
+                rrf_k,
+            )
+
     # 整篇读回只按文档编号排序，不重新计算相似度：这是"读完这一篇"，不是检索。
     def read_document(
         self, collection_id: str, doc_id: str, filters: JsonObject | None = None
@@ -412,3 +500,61 @@ def _passage(row: JsonObject, score: float | None = None) -> Passage:
             metadata=require_object(row["metadata"]),
         ),
     )
+
+
+# 关键词路的相似度下限：ASCII 精确子串另有加分，中文按 trigram 相似度兜底。
+KEYWORD_SIMILARITY_THRESHOLD = 0.3
+
+
+def keyword_like_pattern(text: str) -> str:
+    """把查询文本变成 ILIKE 子串模式；通配符按字面转义，避免用户输入改变匹配范围。"""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def reciprocal_rank_fusion(
+    vectors: list[Passage], keywords: list[Passage], limit: int, rrf_k: int
+) -> list[Passage]:
+    """按 Reciprocal Rank Fusion 融合两路候选；同 id 只保留一份溯源。
+
+    关键词路只应补充召回，不应把向量路已命中的片段挤出最终名额：融合结果至少保留
+    一半名额给向量候选（按向量路原排名优先补足）。这是对基准不回归的确定性保护，
+    否则关键词噪声会让纯向量本可命中的证据掉出 top-k。
+    """
+    scores: dict[str, float] = {}
+    items: dict[str, Passage] = {}
+    for passages in (vectors, keywords):
+        for rank, passage in enumerate(passages, start=1):
+            scores[passage.id] = scores.get(passage.id, 0.0) + 1.0 / (rrf_k + rank)
+            items.setdefault(passage.id, passage)
+    ordered = sorted(
+        items.values(),
+        key=lambda passage: (-scores[passage.id], passage.source.doc_id, passage.source.chunk_no),
+    )
+    selected = ordered[:limit]
+    present = {passage.id for passage in selected}
+    vector_ids = {passage.id for passage in vectors}
+    guarantee = min(limit, (limit + 1) // 2, len(vectors))
+    for passage in vectors:
+        kept = sum(item.id in vector_ids for item in selected)
+        if kept >= guarantee:
+            break
+        if passage.id in present:
+            continue
+        if len(selected) >= limit:
+            selected.pop()
+        selected.append(passage)
+        present.add(passage.id)
+    selected.sort(
+        key=lambda passage: (-scores[passage.id], passage.source.doc_id, passage.source.chunk_no)
+    )
+    return [
+        Passage(
+            id=passage.id,
+            title=passage.title,
+            text=passage.text,
+            score=scores[passage.id],
+            source=passage.source,
+        )
+        for passage in selected
+    ]

@@ -85,6 +85,42 @@ class Arguments(argparse.Namespace):
     stages: str = "manual-loop"
     per_type: int = 2
     config: Path = ROOT / "backend/configs/local.toml"
+    # 基准显式声明治理配置：默认关闭 006 新项，与 005 抽样基线同口径。
+    governance: bool = False
+    # 只切换检索路径，便于离线对比混合检索与纯向量，不影响上下文/配额。
+    hybrid: bool = False
+
+
+# 006 治理项的关闭值；基准不跟随 local.toml 默认变化，避免分数隐性漂移。
+BASELINE_GOVERNANCE = {
+    "context_char_budget": 0,
+    "context_tool_result_budget": 0,
+    "context_compaction_trigger_chars": 0,
+    "context_briefing_cap": 0,
+    "memory_recall_char_budget": 0,
+    "memory_semantic_limit": 0,
+    "quota_merchant_daily_turns": 0,
+    "quota_internal_daily_turns": 0,
+    "quota_global_daily_turns": 0,
+    "quota_merchant_concurrency": 0,
+    "failure_retry_attempts": 0,
+    "failure_retry_delay_seconds": 0,
+    "knowledge_hybrid": False,
+}
+
+
+def governance_overrides(args: Arguments) -> dict[str, object]:
+    """按命令行显式声明本轮基准使用的 006 配置。
+
+    --governance 采用 local.toml 的其余治理默认值，但检索路径固定纯向量——
+    否则报表会把混合检索误标成纯向量（F1）。--hybrid 才是唯一开启混合检索的开关。
+    """
+    overrides: dict[str, object] = (
+        {"knowledge_hybrid": False} if args.governance else dict(BASELINE_GOVERNANCE)
+    )
+    if args.hybrid:
+        overrides["knowledge_hybrid"] = True
+    return overrides
 
 
 def blueprints() -> list[JsonObject]:
@@ -308,10 +344,15 @@ async def run_stage(
         load_settings(args.config),
         data_dir=output / stage,
         workflow=stage,
+        **governance_overrides(args),
     )
     if settings.embedding is None:
         raise ValueError("Embedding settings required")
     (output / stage).mkdir(parents=True, exist_ok=True)
+    print(
+        f"  {stage} 实际检索路径：{'混合' if settings.knowledge_hybrid else '纯向量'}",
+        flush=True,
+    )
     await ollama_identity(settings.embedding)
     rows: list[Row] = []
     with open_store(settings) as store:
@@ -345,6 +386,16 @@ async def main() -> None:
     parser.add_argument("--stages", default=Arguments.stages)
     parser.add_argument("--per-type", type=int, default=Arguments.per_type)
     parser.add_argument("--config", type=Path, default=Arguments.config)
+    parser.add_argument(
+        "--governance",
+        action="store_true",
+        help="使用 local.toml 的 006 治理默认值；缺省按 005 基线关闭",
+    )
+    parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="仅启用混合检索，用于与纯向量路径做离线对比",
+    )
     args = parser.parse_args(namespace=Arguments())
 
     output = (
@@ -355,6 +406,16 @@ async def main() -> None:
     cases = sample(blueprints(), args.per_type)
     model = load_settings(args.config).model.name
     print(f"题目 {len(cases)} 道，阶段 {args.stages}，输出 {output}")
+    retrieval = "混合" if governance_overrides(args)["knowledge_hybrid"] else "纯向量"
+    print(
+        "治理配置："
+        + (
+            "--governance（local.toml 默认值，检索固定纯向量）"
+            if args.governance
+            else "基线关闭 006 新项"
+        )
+        + f"；检索={retrieval}"
+    )
 
     report = [
         "# Benchmark 对照报表",
@@ -363,6 +424,9 @@ async def main() -> None:
             f"题目 {len(cases)} 道，模型 {model}。单次运行，阶段之间几道题的差距"
             "不足以区分策略差异与模型波动；方向性结论（某一级在哪类题上更强）才可读。"
         ),
+        f"检索路径：{retrieval}；治理配置："
+        + ("local.toml 默认值" if args.governance else "基线关闭 006 新项"),
+        "",
         "",
         "两条独立的判据，不能互相替代：",
         "",

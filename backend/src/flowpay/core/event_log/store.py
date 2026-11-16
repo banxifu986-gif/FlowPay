@@ -194,6 +194,27 @@ class EventStore(AsyncEventWriter):
             ).validate_python(rows, strict=True)
         ]
 
+    def daily_run_count(self, day: str, user_id: str | None = None) -> int:
+        """按 UTC 日期统计 run.started；商户归属取自同会话的 session.created。
+
+        时间戳在事件 JSON 内，按前 10 位日期比较；user_id 为 None 时统计全局。
+        """
+        with self.connect() as db:
+            row = cast(
+                tuple[object],
+                db.execute(
+                    """
+                    SELECT count(*) FROM events r
+                    JOIN events c ON c.session_id=r.session_id AND c.type='session.created'
+                    WHERE r.type='run.started'
+                      AND substr(json_extract(r.data,'$.timestamp'),1,10)=?
+                      AND (? IS NULL OR json_extract(c.data,'$.payload.user_id')=?)
+                    """,
+                    (day, user_id, user_id),
+                ).fetchone(),
+            )
+        return require_int(row[0])
+
     def delete_sessions(self, session_ids: list[str]) -> list[str]:
         """仅在本连接授权整会话删除，事务结束后关闭连接，不开放一般事件改写。"""
         deleted: list[str] = []

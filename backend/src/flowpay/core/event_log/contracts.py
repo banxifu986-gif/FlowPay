@@ -64,6 +64,14 @@ class EventStoreProtocol(Protocol):
         """
         ...
 
+    def daily_run_count(self, day: str, user_id: str | None = None) -> int:
+        """统计某个 UTC 日期（YYYY-MM-DD）已开始的回合数，供用量守卫计量。
+
+        user_id 给定时只统计该主体会话的 run.started；None 表示全局。
+        计量复用既有事件日志，不为配额新建表，也不读取模型正文。
+        """
+        ...
+
 
 @runtime_checkable
 class RuntimeLockCheck(Protocol):

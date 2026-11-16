@@ -185,3 +185,41 @@ async def test_legacy_metadata_without_audience_stays_visible(
     assert [p.source.doc_id for p in internal_only] == ["internal"]
     assert reader.read_document(cid, "legacy", {"audience": "external"})
     assert reader.read_document(cid, "internal", {"audience": "external"}) == []
+
+
+async def test_hybrid_search_fuses_keyword_exact_match(
+    stores: tuple[PostgresVectorStore, PostgresVectorStore],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关键词路把 ASCII 错误码精确命中拉到首位，向量路仍保留候选（specs/006 US4）。"""
+    from flowpay.core.knowledge import HybridConfig
+
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "secret")
+    builder, reader = stores
+    settings = model_settings()
+    cid = collection(builder, settings)
+    builder.save_document(
+        cid, Document("alpha", "alpha", "alpha.md", "无关说明"), [Chunk(1, "无关说明")]
+    )
+    builder.save_document(
+        cid,
+        Document("zeta", "zeta", "zeta.md", "错误码 E4021 的处理方式"),
+        [Chunk(1, "错误码 E4021 的处理方式")],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        text = require_text(require_list(require_object(parse_json(request.content))["input"])[0])
+        vector = [0, 1, 0] if "E4021" in text else [1, 0, 0]
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": vector}]})
+
+    events = EventStore(tmp_path / "hybrid.sqlite")
+    tracer = Tracer(events, "hybrid", "run")
+    embeddings = EmbeddingClient(
+        OpenAiEmbeddingModel(settings, httpx.MockTransport(handler)), tracer
+    )
+    await KnowledgeClient(builder, embeddings, tracer).embed_pending(cid)
+    builder.mark_ready(cid, {"alpha": 1, "zeta": 1})
+    hybrid = await KnowledgeClient(reader, embeddings, tracer, HybridConfig()).search(cid, "E4021")
+    assert [p.source.doc_id for p in hybrid] == ["zeta", "alpha"]
+    assert hybrid[0].source.sha256 == builder.read_passage(cid, "zeta", 1).passage.source.sha256

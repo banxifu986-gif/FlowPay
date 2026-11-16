@@ -119,6 +119,15 @@ class PassageLookup:
     document_text: str
 
 
+@dataclass(frozen=True)
+class HybridConfig:
+    """混合检索参数；None 表示纯向量路径（测试直构客户端时的缺省）。"""
+
+    keyword_limit: int = 20
+    vector_limit: int = 20
+    rrf_k: int = 60
+
+
 class VectorStore(Protocol):
     """向量与集合的存取契约；不含查询文本构造策略，也不记录调用轨迹。"""
 
@@ -144,6 +153,21 @@ class VectorStore(Protocol):
         filters: JsonObject | None = None,
     ) -> list[Passage]:
         """在指定集合内用查询向量排序并过滤元数据，返回最多 limit 条带来源的候选。"""
+        ...
+
+    def search_hybrid(
+        self,
+        collection_id: str,
+        query: EmbeddedBatch,
+        text: str,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+        *,
+        keyword_limit: int = 20,
+        vector_limit: int = 20,
+        rrf_k: int = 60,
+    ) -> list[Passage]:
+        """关键词路与向量路双召回后 RRF 融合；溯源字段与纯向量检索一致。"""
         ...
 
     def read_document(

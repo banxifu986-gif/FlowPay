@@ -4,6 +4,7 @@ from .contracts import (
     Chunk,
     Collection,
     Document,
+    HybridConfig,
     Passage,
     PassageLookup,
     PassageSource,
@@ -15,6 +16,7 @@ from .store import PostgresVectorStore
 __all__ = [
     "Chunk",
     "Document",
+    "HybridConfig",
     "Collection",
     "PendingChunk",
     "Passage",
