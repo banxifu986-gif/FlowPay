@@ -8,6 +8,7 @@ from openai.types.chat import ChatCompletion
 
 from flowpay.core.agent.trace import Tracer
 from flowpay.core.config import Settings
+from flowpay.core.data_sources import SourceClient
 from flowpay.core.event_log import EventStore
 from flowpay.core.execution.contracts import TurnInput
 from flowpay.core.execution.manager import SessionManager
@@ -17,9 +18,18 @@ from flowpay.core.json import JsonObject, require_list, require_object
 from flowpay.core.llm.chat import ChunkSink
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.router import create_stage
+from flowpay.workflows.manual_loop import ManualLoopWorkflow
 from tests.core.principals import INTERNAL
 
-from .fixtures import Model, Search, completion, grounded, search_call
+from .fixtures import Model, Search, completion, empty_sources, grounded, search_call
+
+
+def cast_stage(stage: str, model: Model) -> ManualLoopWorkflow:
+    """取得可调预算的 manual-loop 实例；create_stage 的 Protocol 不暴露实现字段。"""
+    workflow = create_stage(stage, model, retrieval_input)
+    if not isinstance(workflow, ManualLoopWorkflow):
+        raise AssertionError(f"unexpected workflow type: {type(workflow)}")
+    return workflow
 
 
 def successful_search(identifier: str = "good") -> list[ChatCompletion | Exception]:
@@ -43,7 +53,7 @@ async def test_model_can_repair_its_own_request(tmp_path: Path, stage: str, erro
     """坏参数不执行检索，错误以匹配原 ID 的 tool 消息返回；坏回答走模型反馈。"""
     model, search = Model(), Search()
     settings = Settings(tmp_path, tmp_path, workflow=stage, knowledge_collection_id="fixture")
-    resources = RuntimeResources(settings, retriever=search.for_run)
+    resources = RuntimeResources(settings, empty_sources(tmp_path), retriever=search.for_run)
     manager = SessionManager(
         EventStore(tmp_path / "events.sqlite"),
         create_stage(stage, model, retrieval_input),
@@ -94,10 +104,13 @@ async def test_budget_is_per_turn_and_tool_history_survives(tmp_path: Path, stag
     """一次模型多工具请求最多执行三次；下一轮恢复历史后重新开放工具。"""
     model, search = Model(), Search()
     settings = Settings(tmp_path, tmp_path, workflow=stage, knowledge_collection_id="fixture")
-    resources = RuntimeResources(settings, retriever=search.for_run)
+    resources = RuntimeResources(settings, empty_sources(tmp_path), retriever=search.for_run)
+    workflow = cast_stage(stage, model)
+    # 本用例的观察对象就是每轮工具预算；把实现额度固定为 3，验证第 4 个调用被拒绝。
+    workflow.max_tool_calls = 3
     manager = SessionManager(
         EventStore(tmp_path / "events.sqlite"),
-        create_stage(stage, model, retrieval_input),
+        workflow,
         settings,
         resources,
     )
@@ -133,14 +146,17 @@ async def test_current_state_is_saved_and_collection_mismatch_is_rejected(
     model, search = Model(), Search()
     workflow = create_stage(stage, model, retrieval_input)
     tracer = Tracer(EventStore(tmp_path / "events.sqlite"), "s", "r")
-    runtime = AgentRuntime(tracer, knowledge=search.for_run(tracer), collection_id="fixture")
+    sources = SourceClient(empty_sources(tmp_path))
+    runtime = AgentRuntime(
+        tracer, sources, knowledge=search.for_run(tracer), collection_id="fixture"
+    )
     model.responses = successful_search()
     turn = TurnInput("HTTP 410", [], {})
     outcome = await workflow.run(turn, runtime)
     assert "format" not in outcome.saved_state
     assert "tool_call_id" in str(outcome.saved_state["messages"])
     # 数据版本核对在受理入口完成；阶段只在恢复已登记来源时守住最后一道边界。
-    moved = AgentRuntime(tracer, knowledge=search.for_run(tracer), collection_id="other")
+    moved = AgentRuntime(tracer, sources, knowledge=search.for_run(tracer), collection_id="other")
     with pytest.raises(ValueError, match="another collection"):
         await workflow.run(TurnInput("继续", [], outcome.saved_state), moved)
 
@@ -154,7 +170,7 @@ async def test_cancel_after_success_keeps_previous_checkpoint(
     """失败/取消拥有独立消息副本，已提交的上轮工具和来源不受影响。"""
     model, search = Model(), Search()
     settings = Settings(tmp_path, tmp_path, workflow=stage, knowledge_collection_id="fixture")
-    resources = RuntimeResources(settings, retriever=search.for_run)
+    resources = RuntimeResources(settings, empty_sources(tmp_path), retriever=search.for_run)
     manager = SessionManager(
         EventStore(tmp_path / "events.sqlite"),
         create_stage(stage, model, retrieval_input),
@@ -196,7 +212,12 @@ async def test_unknown_citation_does_not_retry_or_discard_answer(
     workflow = create_stage(stage, model, retrieval_input)
     store = EventStore(tmp_path / "events.sqlite")
     tracer = Tracer(store, "s", "r")
-    runtime = AgentRuntime(tracer, knowledge=search.for_run(tracer), collection_id="fixture")
+    runtime = AgentRuntime(
+        tracer,
+        SourceClient(empty_sources(tmp_path)),
+        knowledge=search.for_run(tracer),
+        collection_id="fixture",
+    )
     text = "资料仍有缺口。[doc:UNKNOWN#c001]"
     model.responses = [completion(text)]
     result = await workflow.run(TurnInput("请解释规则", [], {}), runtime)
@@ -216,7 +237,11 @@ async def test_previous_workflow_version_requires_new_session(tmp_path: Path, st
     workflow = create_stage(stage, model, retrieval_input)
     settings = Settings(tmp_path, tmp_path)
     store = EventStore(tmp_path / "events.sqlite")
-    store.append("old", [("session.created", {"workflow": {"id": workflow.id, "version": "1"}})])
+    # 旧会话版本必须与当前实现不同；硬编码 "1" 曾与当前 version 相同，断言必然不触发。
+    store.append(
+        "old",
+        [("session.created", {"workflow": {"id": workflow.id, "version": "previous"}})],
+    )
     manager = SessionManager(store, workflow, settings)
     try:
         with pytest.raises(Conflict):

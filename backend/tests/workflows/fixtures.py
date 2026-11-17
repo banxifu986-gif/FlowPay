@@ -4,6 +4,7 @@ import asyncio
 import copy
 from collections.abc import Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
 from openai.types.chat import (
@@ -13,6 +14,8 @@ from openai.types.chat import (
     ChatCompletionToolParam,
 )
 
+from flowpay.core.data_sources import DataSources, digest
+from flowpay.core.data_sources.policy import SourcePolicy
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.json import JsonObject, to_json_object
 from flowpay.core.knowledge.contracts import Passage, PassageSource
@@ -197,6 +200,25 @@ class Search:
             {"doc_id": doc_id, "passages": [to_json_object(p) for p in passages]},
         )
         return passages
+
+
+def empty_sources(root: Path) -> DataSources:
+    """空登记的数据源，供只测 orchestration/模型协议、不查业务表的阶段用例。
+
+    manual-loop 会挂载固定业务工具并在挂载点读取字段取值；这是有意的 fail-fast：
+    没有数据源策略就不该启动业务阶段。测试要覆盖循环本身，必须显式提供一个
+    合法但为空的数据源，而不是让运行时悄悄跳过工具。
+    """
+    manifest = root / "fixture-manifest.json"
+    manifest.write_text('{"files": {}}', encoding="utf-8")
+    policy: SourcePolicy = {
+        "release_id": "fixture",
+        "manifest": manifest.name,
+        "manifest_sha256": digest(manifest),
+        "sql": {},
+        "logs": {},
+    }
+    return DataSources(root, policy)
 
 
 class Model:

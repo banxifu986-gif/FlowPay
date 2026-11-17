@@ -99,3 +99,35 @@
 - 容器 pytest **0F** 全绿；ruff / basedpyright / 前端三件套全绿。
 - 抽样基准口径复跑不回归（12 题抽样，feature ≥ main 基线）。
 - 判定记录完整（13/13 有出处）；AGENTS.md 两条约定落地。
+
+## 判定记录（13/13，2026-11-17）
+
+结论：13 条全部为**测试夹具/断言过期**，没有无意回归；业务行为未改。
+批量修法：`tests/workflows/fixtures.py` 新增 `empty_sources()`，为只测编排协议、
+不查业务表的 manual-loop 用例显式提供合法空数据源——`runtime.field_values` 的
+fail-fast 是有意约束（没有数据源策略就不启动业务阶段），测试不该依赖「缺配置也能跑」。
+
+| # | 用例 | 判定 | 溯源依据 | 修法 |
+|---|---|---|---|---|
+| 1–6 | `test_model_can_repair_its_own_request[manual-loop-{unknown_tool,invalid_json,invalid_limit,boolean_limit,blank_query,truncated}]` | 有意变更（夹具缺口） | manual-loop 在 `agent.offer` 时调用 `runtime.field_values`；`AgentRuntime.field_values` 对 `sources=None` fail-fast。`create_workflow` 也要求 `sources_config`，属既有的「缺策略即拒启」 | 注入 `empty_sources()`（合法 manifest + 空 sql/logs） |
+| 7 | `test_budget_is_per_turn_and_tool_history_survives[manual-loop]` | 断言过期（夹具缺口） | `ManualLoopWorkflow.max_tool_calls` 自 initial commit 起就是 8；用例文字写「最多三次」但实现从未是 3。先补空数据源后真实执行了 4 个调用 | 用例把实现额度固定为 3，验证第 4 个被预算拒绝；下一轮工具重新开放 |
+| 8 | `test_current_state_is_saved_and_collection_mismatch_is_rejected[manual-loop]` | 有意变更（夹具缺口） | 同一 fail-fast；用例直接构造 `AgentRuntime` 未传 sources | 两处 runtime 显式传 `SourceClient(empty_sources())` |
+| 9 | `test_cancel_after_success_keeps_previous_checkpoint[manual-loop]` | 有意变更（夹具缺口） | 同 1–6：`RuntimeResources` 未装配 sources | 注入 `empty_sources()` |
+| 10 | `test_unknown_citation_does_not_retry_or_discard_answer[manual-loop]` | 有意变更（夹具缺口） | 同 8：直接构造 runtime 未传 sources | 注入 `SourceClient(empty_sources())` |
+| 11 | `test_previous_workflow_version_requires_new_session[manual-loop]` | 测试数据错误 | 用例把旧会话版本硬编码为 `"1"`，而 `ManualLoopWorkflow.version` 也是 `"1"`；该断言从 initial commit 起就不可能触发，并非 005 引入 | 旧会话版本改为 `"previous"`，保留「版本变了才拒绝」的外部行为 |
+| 12 | `test_insufficient_conditions_ask_user_then_wait` | 有意变更（断言锁内部调用次数） | `synthesize_node` 在 `shared.pending` 非空时直接返回追问、不调用模型；实际 2 次调用（plan + worker）是设计，旧断言写 3 | 去掉内部调用次数断言，保留 `status=waiting_user` 与追问正文两条外部可见断言 |
+| 13 | `test_condition_revision_discards_stale_findings` | 夹具过期 + 断言过宽 | 用例给 `query_payments` 传了 `filters: {...}` 嵌套对象，但 `sql_tool` 从一开始就把 filters 平铺成顶层参数，jsonschema 拒绝 → `ToolInputError` → findings 为空；后半段断言又把「改口说明里的旧值」误当旧结论 | 调用参数平铺 `payment_id`；后半段改为检查旧 finding 行 `query_payments account_id=acct_bg_001` 不再出现 |
+
+### 负载抖动加固
+
+`test_parallel_workers_finish_no_later_than_serial`：原断言单次计时 `parallel < serial`，
+并发负载下受调度抖动。改为串行/并行**交替 3 轮取中位数**再比较；只降低测量噪声，
+不放宽判定（中位数仍要求并行严格更快）。
+
+### 验收
+
+- 容器 pytest：**0F / 365P / 5S**。
+- ruff / format / basedpyright：全绿；前端三件套全绿。
+- 抽样基准：基线配置臂复跑 3 次，任务通过 2/12、0/12、1/12，证据全命中
+  1/12、3/12、3/12；本轮只改测试夹具/断言与 AGENTS 约定，未改生产路径，
+  与修复前基线参考运行 2/12、4/12 的差异属单次模型波动。
