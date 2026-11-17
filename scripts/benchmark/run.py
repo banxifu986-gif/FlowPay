@@ -91,20 +91,26 @@ class Arguments(argparse.Namespace):
     hybrid: bool = False
 
 
-# 006 治理项的关闭值；基准不跟随 local.toml 默认变化，避免分数隐性漂移。
-BASELINE_GOVERNANCE = {
-    "context_char_budget": 0,
-    "context_tool_result_budget": 0,
-    "context_compaction_trigger_chars": 0,
-    "context_briefing_cap": 0,
-    "memory_recall_char_budget": 0,
-    "memory_semantic_limit": 0,
+# 基准不测限流与重试：任何臂都关闭，避免全量多轮题撞内部日上限（约 600-900 次 run），
+# 也保证臂间只差上下文治理与检索路径两个变量，归因才干净。
+BENCHMARK_ISOLATION = {
     "quota_merchant_daily_turns": 0,
     "quota_internal_daily_turns": 0,
     "quota_global_daily_turns": 0,
     "quota_merchant_concurrency": 0,
     "failure_retry_attempts": 0,
     "failure_retry_delay_seconds": 0,
+}
+
+# 基线臂：006 治理项全关，与 005 抽样基线同口径；不跟随 local.toml 默认变化。
+BASELINE_GOVERNANCE = {
+    **BENCHMARK_ISOLATION,
+    "context_char_budget": 0,
+    "context_tool_result_budget": 0,
+    "context_compaction_trigger_chars": 0,
+    "context_briefing_cap": 0,
+    "memory_recall_char_budget": 0,
+    "memory_semantic_limit": 0,
     "knowledge_hybrid": False,
 }
 
@@ -112,12 +118,14 @@ BASELINE_GOVERNANCE = {
 def governance_overrides(args: Arguments) -> dict[str, object]:
     """按命令行显式声明本轮基准使用的 006 配置。
 
-    --governance 采用 local.toml 的其余治理默认值，但检索路径固定纯向量——
-    否则报表会把混合检索误标成纯向量（F1）。--hybrid 才是唯一开启混合检索的开关。
+    --governance 采用 local.toml 的上下文治理值（逃逸出隔离项），检索路径固定
+    纯向量——否则报表会把混合检索误标成纯向量（F1）。--hybrid 才是唯一开启
+    混合检索的开关。
     """
     overrides: dict[str, object] = (
-        {"knowledge_hybrid": False} if args.governance else dict(BASELINE_GOVERNANCE)
+        dict(BENCHMARK_ISOLATION) if args.governance else dict(BASELINE_GOVERNANCE)
     )
+    overrides.setdefault("knowledge_hybrid", False)
     if args.hybrid:
         overrides["knowledge_hybrid"] = True
     return overrides

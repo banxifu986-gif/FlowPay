@@ -83,7 +83,8 @@ services:
     volumes:
       - ./backend:/app/backend
       - ./scripts:/app/scripts
-      - ./var:/app/var
+      # 默认挂宿主目录；长跑基准可切命名卷（规避 Windows bind mount 上 SQLite 的 disk I/O error）。
+      - ${FLOWPAY_VAR_MOUNT:-./var}:/app/var
       - ${FLOWPAY_DATASET_ROOT}:/dataset:ro
     ports:
       - "127.0.0.1:8000:8000"
@@ -152,6 +153,11 @@ services:
 volumes:
   flowpay_postgres:
   flowpay_ollama:
+  # 基准长跑输出卷（FLOWPAY_VAR_MOUNT=flowpay_bench_{a,c}_out 时使用），需先 docker volume create。
+  flowpay_bench_a_out:
+    external: true
+  flowpay_bench_c_out:
+    external: true
 
 
 
