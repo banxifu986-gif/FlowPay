@@ -13,9 +13,16 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from flowpay.core.event_log.types import Event
-from flowpay.core.json import parse_json, require_list, require_object, require_text
+from flowpay.core.json import (
+    JsonObject,
+    parse_json,
+    require_list,
+    require_object,
+    require_text,
+)
 
-# manual-loop 的 ask_user 显式记录缺哪几项，比读正文准；这里把字段名翻译成 benchmark 的类别。
+# manual-loop 的 ask_user 显式记录缺哪几项，007 起 synthesize 决策也会发 clarification.decided；
+# 这里把字段名翻译成 benchmark 的类别：条件字段照旧，四个背景主题映射到同名类别。
 FIELD_CATEGORY: dict[str, str] = {
     "account_id": "account_context",
     "environment": "account_context",
@@ -25,6 +32,10 @@ FIELD_CATEGORY: dict[str, str] = {
     "delivery_id": "identifiers",
     "endpoint_id": "identifiers",
     "customer_id": "identifiers",
+    "goal": "goal",
+    "symptom_details": "symptom_details",
+    "occurrence_time": "occurrence_time",
+    "api_version": "api_version",
 }
 
 Signal = Literal["waiting_user", "ask_user_tool", "text", "none"]
@@ -62,20 +73,31 @@ class Transcript:
             self.deviations.append(deviation)
 
 
+def _declared_fields(payload: JsonObject, key: str) -> list[str]:
+    """读载荷里的一个缺项列表；缺失或为 null 视为空。"""
+    return [require_text(item) for item in require_list(payload.get(key) or [])]
+
+
 def asked_fields(events: Sequence[Event], run_id: str | None) -> list[str]:
-    """本轮 ask_user 调用声明缺少的字段；没有这个工具的阶段返回空列表。"""
+    """本轮声明缺少的字段，按声明顺序去重。
+
+    两条通道：tool.started 里 ask_user 的 missing/topics，与 clarification.decided
+    的 topics/conditions（FR-12）。旧臂没有决策事件，单靠 ask_user 也能读出缺项；
+    两类事件都没有时返回空列表。
+    """
     fields: list[str] = []
     for event in events:
-        if event["type"] != "tool.started" or event["run_id"] != run_id:
+        if event["run_id"] != run_id:
             continue
         payload = require_object(event["payload"])
-        if payload.get("name") != "ask_user":
-            continue
-        arguments = require_object(parse_json(require_text(payload["arguments"])))
-        fields.extend(
-            require_text(item) for item in require_list(arguments.get("missing") or [])
-        )
-    return fields
+        if event["type"] == "tool.started" and payload.get("name") == "ask_user":
+            arguments = require_object(parse_json(require_text(payload["arguments"])))
+            fields.extend(_declared_fields(arguments, "missing"))
+            fields.extend(_declared_fields(arguments, "topics"))
+        elif event["type"] == "clarification.decided":
+            fields.extend(_declared_fields(payload, "topics"))
+            fields.extend(_declared_fields(payload, "conditions"))
+    return list(dict.fromkeys(fields))
 
 
 def looks_like_question(text: str) -> bool:

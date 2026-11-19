@@ -189,6 +189,19 @@ async def play(
         messages = view["messages"]
         answer = require_text(messages[-1]["content"]) if messages else ""
         if not multi:
+            # 单轮题不再提前跳过：以 waiting_user 结束也是一轮澄清信号（FR-10），
+            # 否则报表会低估澄清频率（单轮 A 20 / C 22 个等待轮被漏计）。
+            if view["status"] == "waiting_user":
+                signal, categories = conversation.detect(
+                    view["status"],
+                    answer,
+                    events,
+                    latest_run(events),
+                    keyword_hits(answer),
+                )
+                script.exchanges.append(
+                    conversation.Exchange(signal, categories, [], "")
+                )
             break
         signal, categories = conversation.detect(
             view["status"], answer, events, latest_run(events), keyword_hits(answer)
@@ -202,6 +215,9 @@ async def play(
                 script.note("clarification_not_recognized")
             break
         if turn == limit:
+            # 预算耗尽的最终轮没有下一轮用户回复，但同样是一轮等待信号：
+            # 先补记 Exchange（无披露）再记偏离，signals 才能覆盖最终轮（FR-10）。
+            script.exchanges.append(conversation.Exchange(signal, categories, [], ""))
             script.note("max_clarifications_exceeded")
             break
         seen = {c for exchange in script.exchanges for c in exchange.categories}

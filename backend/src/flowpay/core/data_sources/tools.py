@@ -74,12 +74,13 @@ def sql_tool(
     """把一个登记关系变成工具；条件名取自登记字段，值始终作为绑定参数传入。
 
     scope_overrides 是服务端强制的列值：先取覆盖值再退回对话值，因此模型与用户
-    都改不了已绑定的账户，事件里记录的也是覆盖后的实际条件。
+    都改不了已绑定的账户，事件里记录的也是覆盖后的实际条件。被覆盖的列同时从
+    Schema 的 properties 与 required 移除——模型看不到也不必填写（specs/007 US4）。
     """
+    overrides = scope_overrides or {}
 
     def scope_of(arguments: JsonObject) -> JsonObject:
         """按登记顺序取 scope 值；被强制覆盖的列一律使用服务端值。"""
-        overrides = scope_overrides or {}
         return {
             name: overrides[name] if name in overrides else require_text(arguments[name])
             for name in spec.scope
@@ -98,7 +99,14 @@ def sql_tool(
             }
         return rows_for_model(await query(spec.source, scope, filters))
 
-    return Tool(spec.name, spec.description, schema(spec.scope, spec.filters, values), run)
+    required = [name for name in spec.scope if name not in overrides]
+    optional = [name for name in spec.filters if name not in overrides]
+    return Tool(
+        spec.name,
+        description_for(spec.description, overrides),
+        schema(required, optional, values),
+        run,
+    )
 
 
 def log_tool(
@@ -110,8 +118,10 @@ def log_tool(
     """把一个登记的日志来源变成工具；过滤条件可以只给一部分。
 
     scope_overrides 与 SQL 工具同义：日志来源里被声明为隔离列的字段由服务端决定，
-    因此强制值既是过滤器也是事件里记录的实际条件。
+    因此强制值既是过滤器也是事件里记录的实际条件。必填项取第一个未被覆盖的过滤
+    字段；全部被覆盖时 required 为空，运行函数仍保留"至少一个过滤条件"的提示。
     """
+    overrides = scope_overrides or {}
 
     async def run(arguments: JsonObject) -> JsonObject:
         filters: JsonObject = {
@@ -125,11 +135,28 @@ def log_tool(
         window = {k: require_text(arguments[k]) for k in ("start", "end") if k in arguments}
         return log_rows_for_model(await query(spec.source, filters=filters, **window))
 
-    optional = (*spec.filters[1:], *(("start", "end") if spec.window else ()))
-    return Tool(spec.name, spec.description, schema(spec.filters[:1], optional, values), run)
+    open_filters = [name for name in spec.filters if name not in overrides]
+    required = open_filters[:1]
+    optional = (*open_filters[1:], *(("start", "end") if spec.window else ()))
+    return Tool(
+        spec.name,
+        description_for(spec.description, overrides),
+        schema(required, optional, values),
+        run,
+    )
 
 
 WINDOW_HINT = "ISO 8601 时间戳，必须带时区，例如 2026-08-19T11:00:00Z"
+
+# 存在服务端绑定时追加的说明：模型据此知道不必（也不能）索要该条件（specs/007 US4）。
+BOUND_HINT = "（以下条件已由系统绑定，无需向用户索要，也不会出现在参数里：{names}）"
+
+
+def description_for(description: str, overrides: Mapping[str, str]) -> str:
+    """工具描述在存在绑定时追加一句说明，避免模型仍按旧文案索要已绑定条件。"""
+    if not overrides:
+        return description
+    return description + BOUND_HINT.format(names="、".join(sorted(overrides)))
 
 
 def schema(

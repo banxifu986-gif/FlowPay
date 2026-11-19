@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """基准失败题归因：读各臂逐题结果，按主因分类并输出对比报告。
 
 用法：python scripts/benchmark/attribution.py --arm A=var/benchmark/<dir> --arm C=var/benchmark/<dir>
@@ -95,7 +96,11 @@ def load_rows(directory: Path) -> list[Row]:
 
 
 def main_cause(row: Row) -> str | None:
-    """返回失败主因；通过的题返回 None。"""
+    """返回失败主因；通过的题返回 None。
+
+    007 起 signals 覆盖所有 waiting_user 轮次（含单轮等待与多轮最终轮），
+    因此这里不用改判定逻辑，直接按新口径重算即可。
+    """
     if row.task_pass:
         return None
     if any(d in ("repeated_category", "unexpected_category") for d in row.deviations):
@@ -105,6 +110,27 @@ def main_cause(row: Row) -> str | None:
     if not row.evidence_pass:
         return "evidence_miss"
     return "conclusion_wrong"
+
+
+def waiting_breakdown(rows: list[Row]) -> tuple[int, int, int]:
+    """把 waiting 信号拆成三类：单轮等待 / 多轮中间等待 / 多轮最终等待。
+
+    最终轮以 max_clarifications_exceeded 偏离标记；旧臂逐题行没有新信号，
+    这里的拆分只在新口径的逐题行上有意义。
+    """
+    single = 0
+    middle = 0
+    final = 0
+    for row in rows:
+        if "waiting_user" not in row.signals:
+            continue
+        if not row.multi_turn:
+            single += 1
+        elif "max_clarifications_exceeded" in row.deviations:
+            final += 1
+        else:
+            middle += 1
+    return single, middle, final
 
 
 def model_of(directory: Path) -> str:
@@ -139,13 +165,13 @@ def render(arms: list[tuple[str, Path]]) -> str:
 
     lines += ["## 分类总表", ""]
     header = (
-        "| 臂 | 题数 | 任务通过 | 证据全命中 | waiting_user | "
+        "| 臂 | 题数 | 任务通过 | 证据全命中 | waiting_user | 单轮等待 | 中间等待 | 最终等待 | "
         + " | ".join(CAUSES)
         + " |"
     )
     lines += [
         header,
-        "| --- | ---: | ---: | ---: | ---: | "
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
         + " | ".join("---:" for _ in CAUSES)
         + " |",
     ]
@@ -154,9 +180,10 @@ def render(arms: list[tuple[str, Path]]) -> str:
         causes = [main_cause(r) for r in rows]
         cells = [str(sum(1 for c in causes if c == key)) for key in CAUSES]
         waiting = sum(1 for r in rows if "waiting_user" in r.signals)
+        single, middle, final = waiting_breakdown(rows)
         lines.append(
             f"| {label} | {len(rows)} | {sum(r.task_pass for r in rows)} | "
-            + f"{sum(r.evidence_pass for r in rows)} | {waiting} | "
+            + f"{sum(r.evidence_pass for r in rows)} | {waiting} | {single} | {middle} | {final} | "
             + " | ".join(cells)
             + " |"
         )

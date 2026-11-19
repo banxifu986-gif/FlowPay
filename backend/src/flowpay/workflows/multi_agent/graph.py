@@ -45,6 +45,7 @@ from flowpay.workflows.manual_loop import (
     restore_queried,
 )
 
+from .clarification import ClarificationState, clarification_note
 from .intent import CLASSIFY_PROMPT, DEFAULT_INTENT, SET_INTENT, conditions_route, read_intent
 from .investigation import (
     discard_stale,
@@ -206,6 +207,7 @@ class MultiAgentWorkflow:
             done=restore_queried(turn.saved_state.get("queried")),
             findings=restore_findings(turn.saved_state.get("findings")),
             retrieved=retrieved,
+            clarification=ClarificationState.restore(turn.saved_state.get("clarification")),
         )
         revision = shared.case.apply(conditions_in(turn.user_message))
         discard_stale(shared, revision.changed)
@@ -222,6 +224,9 @@ class MultiAgentWorkflow:
             referenced.add(f"{claim_tool}:{finding.target.casefold()}")
         cap_query_keys(shared.done, referenced, QUERY_KEYS_CAP)
         note = briefing(shared.case, revision)
+        # 澄清进度并入同一段简报：单点注入自动携带到 plan/worker/synthesize（specs/007）。
+        if progress := clarification_note(shared.clarification):
+            note = f"{note}\n\n{progress}" if note else progress
         # 记忆段并入 case_note：单点注入自动携带到 plan/worker/synthesize（specs/004）。
         section = await recall_note_section(
             turn.user_message, shared.case, runtime, self.memory_policy
@@ -252,6 +257,7 @@ class MultiAgentWorkflow:
         checkpoint: JsonObject = {
             **turn.saved_state,
             "case": to_json_object(shared.case),
+            "clarification": to_json_object(shared.clarification),
             "queried": sorted(shared.done),
             "findings": [to_json_object(finding) for finding in shared.findings],
             "evidence": [to_json_object(passage) for passage in shared.retrieved.all()],

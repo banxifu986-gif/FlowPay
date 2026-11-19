@@ -36,3 +36,6 @@ var/
 
 # 黑马点评模拟数据的生成物；生成器代码、知识文档和 Benchmark 可保留
 /hmdp-dataset/data/generated/
+
+# IDE
+.idea/

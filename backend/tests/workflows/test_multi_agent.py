@@ -184,6 +184,18 @@ async def test_unreadable_intent_falls_back_to_troubleshoot(tmp_path: Path) -> N
         resources.close()
 
 
+def clarify_call(identifier: str, question: str) -> JsonObject:
+    """构造一次 set_response 的追问决策；汇总节点据此以等待状态结束本轮。"""
+    return {
+        "id": identifier,
+        "type": "function",
+        "function": {
+            "name": "set_response",
+            "arguments": json.dumps({"mode": "clarify", "question": question}),
+        },
+    }
+
+
 def ask_call(identifier: str, missing: list[str], question: str) -> JsonObject:
     """构造一次 ask_user 调用；参数仍是协议要求的 JSON 字符串。"""
     return {
@@ -338,13 +350,17 @@ async def test_insufficient_conditions_ask_user_then_wait(tmp_path: Path) -> Non
             calls=[tasks_call("plan_1", [{"kind": "sql", "objective": "查这笔支付的通知事件"}])]
         ),
         completion(calls=[ask_call("ask_1", ["account_id", "environment"], "请提供账户与环境")]),
+        completion(calls=[clarify_call("resp_1", "请提供账户与环境")]),
     ]
     try:
         sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
         view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "waiting_user"
-        assert require_text(view["messages"][-1]["content"]) == "请提供账户与环境"
+        content = require_text(view["messages"][-1]["content"])
+        # 007 FR-4：等待轮正文由系统拼出摘要 + 缺项 + 模型问题，不再只是问题原文。
+        assert "请提供账户与环境" in content
+        assert "尚未查到结论" in content
 
     finally:
         await manager.shutdown()
@@ -363,6 +379,7 @@ async def test_supplied_conditions_are_not_asked_again_after_waiting(tmp_path: P
             calls=[tasks_call("plan_1", [{"kind": "sql", "objective": "查这笔支付的通知事件"}])]
         ),
         completion(calls=[ask_call("ask_1", ["account_id", "environment"], "请提供账户与环境")]),
+        completion(calls=[clarify_call("resp_1", "请提供账户与环境")]),
         completion(
             calls=[tasks_call("plan_2", [{"kind": "sql", "objective": "查这笔支付的通知事件"}])]
         ),
@@ -388,8 +405,51 @@ async def test_supplied_conditions_are_not_asked_again_after_waiting(tmp_path: P
 
 
 @pytest.mark.skipif(not snapshot_ready(), reason="business dataset snapshot is not available")
-async def test_pending_question_stops_the_other_worker(tmp_path: Path) -> None:
-    """一个调查员发起追问后其余调查员自然收束，本轮以追问结束（R5）。"""
+async def test_adopted_clarify_blocks_condition_reask_next_round(tmp_path: Path) -> None:
+    """采纳过的追问记入已问条件：下一轮同类重复索要被拦截，改为作答并标注（SC-3）。"""
+    model, search = Model(), Search()
+    manager, resources = make_manager(
+        tmp_path, model, search, sources=DataSources.from_config(POLICY, DATASET)
+    )
+    model.responses = [
+        completion(
+            calls=[tasks_call("plan_1", [{"kind": "sql", "objective": "查这笔支付的通知事件"}])]
+        ),
+        completion(calls=[ask_call("ask_1", ["account_id", "environment"], "请提供账户与环境")]),
+        completion(calls=[clarify_call("resp_1", "请提供账户与环境")]),
+        # 第二轮首条消息不命中规则短路：先给意图分类，再进排查分支。
+        completion(calls=[intent_call("i_2", "troubleshoot")]),
+        completion(
+            calls=[tasks_call("plan_2", [{"kind": "sql", "objective": "查这笔支付的通知事件"}])]
+        ),
+        completion(calls=[ask_call("ask_2", ["account_id", "environment"], "再次索要条件")]),
+        grounded("无法继续查询，基于已有文档结论回答并标注未确认。"),
+        grounded("已根据调查报告回答。"),
+    ]
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
+        waiting = await manager.get_session(sid, INTERNAL)
+        assert require_text(waiting["status"]) == "waiting_user"
+        clarification = require_object(require_object(waiting["state"])["clarification"])
+        assert require_list(clarification["asked_conditions"]) == ["account_id", "environment"]
+        await say(manager, sid, "second", "我再看看，稍后补充")
+        view = await manager.get_session(sid, INTERNAL)
+        # 第二轮重复索要被整体退回：回填说明指出已问过，本轮不再以等待结束。
+        assert "已问过" in str(model.requests[6]["messages"])
+        assert require_text(view["status"]) == "completed"
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+@pytest.mark.skipif(not snapshot_ready(), reason="business dataset snapshot is not available")
+async def test_pending_question_only_stops_the_asking_worker(tmp_path: Path) -> None:
+    """一个调查员发起追问后只有它自己收束：其余调查员把能查的查完再进汇总（007 FR-3）。
+
+    specs/007 的"先查后问"要求文档调查不被缺账户阻塞；本轮仍以 waiting_user 结束，
+    但文档任务照常执行，汇总节点拿到两边的报告。
+    """
     model, search = Model(), Search()
     manager, resources = make_manager(
         tmp_path,
@@ -411,15 +471,16 @@ async def test_pending_question_stops_the_other_worker(tmp_path: Path) -> None:
             ]
         ),
         completion(calls=[ask_call("ask_1", ["account_id", "environment"], "请提供账户与环境")]),
+        completion(calls=[search_call("s1", "Webhook 重试策略")]),
+        grounded("重试策略结论。"),
+        completion(calls=[clarify_call("resp_1", "请提供账户与环境")]),
     ]
     try:
         sid = require_text((await manager.create_session(INTERNAL))["id"])
         await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
         view = await manager.get_session(sid, INTERNAL)
         assert require_text(view["status"]) == "waiting_user"
-        assert require_text(view["messages"][-1]["content"]) == "请提供账户与环境"
-        # 只有协调者和发起追问的调查员消耗了模型调用，另一个调查员没有开工。
-        assert len(model.requests) == 2
+        assert len(search.queries) == 1
     finally:
         await manager.shutdown()
         resources.close()

@@ -127,20 +127,17 @@ class BoundaryWorkflow:
                 ),
             ]
         )
-        sql_result = await toolbox.execute(
-            "query_payments",
-            {
-                "account_id": CONVERSATION_ACCOUNT,
-                "environment": "production",
-                "payment_id": CONVERSATION_PAYMENT,
-            },
-            "call_sql",
-        )
-        log_result = await toolbox.execute(
-            "get_api_request",
-            {"account_id": CONVERSATION_ACCOUNT, "request_id": "req_a"},
-            "call_logs",
-        )
+        # 被绑定的列已从 schema 移除：商户会话只填剩余条件，内部会话照旧填账户。
+        sql_arguments: JsonObject = {
+            "environment": "production",
+            "payment_id": CONVERSATION_PAYMENT,
+        }
+        log_arguments: JsonObject = {"request_id": "req_a"}
+        if "account_id" not in runtime.scope_overrides:
+            sql_arguments["account_id"] = CONVERSATION_ACCOUNT
+            log_arguments["account_id"] = CONVERSATION_ACCOUNT
+        sql_result = await toolbox.execute("query_payments", sql_arguments, "call_sql")
+        log_result = await toolbox.execute("get_api_request", log_arguments, "call_logs")
         return TurnResult(
             text="boundary",
             saved_state={

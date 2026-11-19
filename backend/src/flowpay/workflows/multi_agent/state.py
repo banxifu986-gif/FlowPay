@@ -20,7 +20,9 @@ from flowpay.core.chat.projection import clip_text
 from flowpay.core.chat.usage_view import UsageEntry, from_completion
 from flowpay.core.json import JsonObject, require_int, require_list, require_object, require_text
 from flowpay.core.knowledge.passages import PassageSet
-from flowpay.workflows.manual_loop import AskUserResult, Case, ToolAction
+from flowpay.workflows.manual_loop import Case, ToolAction
+
+from .clarification import ClarificationRequest, ClarificationState
 
 # 节点的统一签名：读图状态，返回要合并回去的部分状态更新。
 # runtime/shared 是每轮资源，节点以闭包捕获依赖，因此包内节点由工厂函数构造。
@@ -125,8 +127,8 @@ class SharedTurn:
 
     case/done/findings/retrieved 从 saved_state 恢复，轮末组装回检查点；
     budget 全体共享一份（Budget(16, 12)），由 claim 统一记账工具调用。
-    pending 置位后，worker 循环短路、synthesize 跳过合成，本轮以
-    waiting_user 结束——追问是正常返回，不是异常控制流。
+    pending 非空时 synthesize 跳过合成、本轮以 waiting_user 结束——追问是正常返回，
+    不是异常控制流；发起追问的调查员自己收束，其余调查员继续把能查的查完。
     """
 
     case: Case = field(default_factory=Case)
@@ -138,7 +140,9 @@ class SharedTurn:
     retrieved: PassageSet = field(default_factory=PassageSet)
     budget: Budget = field(default_factory=lambda: Budget(16, 12))
     actions: list[ToolAction] = field(default_factory=list)
-    pending: list[AskUserResult] = field(default_factory=list)
+    pending: list[ClarificationRequest] = field(default_factory=list)
+    # 澄清进度：问过/答过/明确拿不到的主题，与 Case 的查询条件分开记（specs/007）。
+    clarification: ClarificationState = field(default_factory=ClarificationState)
     # 本轮全部模型调用的用量：worker 由 investigate 收尾并入，直连节点在调用点登记。
     usage_entries: list[UsageEntry] = field(default_factory=list)
 
