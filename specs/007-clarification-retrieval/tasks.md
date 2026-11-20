@@ -45,7 +45,7 @@
 ## Phase 7：US5（P1/P2）文档召回诊断与改进
 
 - [x] T023 [P] [US5] 新建 `scripts/benchmark/retrieval.py`：CLI 参数（`--per-type`、`--limit`、`--config`、`--output`）；读取 96 题样本与 `required_documents` / `planned_evidence_ids`
-- [ ] T024 [US5] `retrieval.py`：三种查询口径（initial / observed / full facts）、纯向量与混合两条路径、top-k recall（k=1/3/5/10/20，按 `source.doc_id` 命中）。`observed` 从 `--observed-arm` 指定臂的事件库读取每题首条之后的 `message.user` 回复，拼到首条消息；无该臂时 observed=initial。**`collect` 必须按 `case.text(dialect)` 取文本（当前实现把 observed 误用了 full）**；补测试断言 observed 检索收到的是 observed 文本而非 full。用假 store 单测 recall 计算与口径构造
+- [x] T024 [US5] `retrieval.py`：查询口径（含实际修复记录）（initial / observed / full facts）、纯向量与混合两条路径、top-k recall（k=1/3/5/10/20，按 `source.doc_id` 命中）。`observed` 从 `--observed-arm` 指定臂的事件库读取每题首条之后的 `message.user` 回复，拼到首条消息；无该臂时 observed=initial。**`collect` 必须按 `case.text(dialect)` 取文本（当前实现把 observed 误用了 full）**；补测试断言 observed 检索收到的是 observed 文本而非 full。用假 store 单测 recall 计算与口径构造。**修复完成（T028 重开轮）：collect 改 case.text(dialect)，双用例守住；后续按 FR-8 修订又加 actual 第四口径与 --answers-arm**
 - [x] T025 [US5] 运行诊断并保存 `var/benchmark/20261117-retrieval-diagnosis.md`：`--observed-arm var/benchmark/20261117-071251-67e7d4`，记录分题型 recall@k、`observed-initial` 与 `full-initial` 差值、不可召回文档清单；确认全程无聊天模型调用。知识集合或嵌入服务不可用时停手报告，不伪造数据
 - [x] T026 [US5] 写诊断决策记录：以 `observed-initial` 的 recall@10 差值判定查询缺信息；`full-initial` 只作上界。若 observed ≥10pp 选查询改写；若 observed <10pp 而 full ≥10pp，停下讨论是补澄清覆盖还是换改造；若两者都低选召回侧的一项。任何候选都无法达到 observed recall@10 +10pp 时停下与 Ban 讨论，不硬凑
 - [x] T027 [US5] 实施所选改造（改动点按 T026 记录，可能涉及 `workflows/multi_agent/investigation.py` 的查询构造或 `core/knowledge` 的检索参数）；只改选定的一项
