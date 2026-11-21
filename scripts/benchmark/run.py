@@ -31,7 +31,7 @@ from flowpay.core.json import (
     require_object,
     require_text,
 )
-from flowpay.core.llm.embedding.ollama import ollama_identity
+from flowpay.core.llm.embedding.ollama import ollama_identity, uses_local_ollama
 from typing_extensions import TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -377,7 +377,9 @@ async def run_stage(
         f"  {stage} 实际检索路径：{'混合' if settings.knowledge_hybrid else '纯向量'}",
         flush=True,
     )
-    await ollama_identity(settings.embedding)
+    # 本机 Ollama 核对部署 digest；云端嵌入没有 native API，跳过（混用防护走 same_vector_space）。
+    if uses_local_ollama(settings.embedding):
+        await ollama_identity(settings.embedding)
     rows: list[Row] = []
     with open_store(settings) as store:
         manager = SessionManager(store, create_workflow(settings), settings)

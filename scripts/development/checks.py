@@ -20,7 +20,7 @@ from flowpay.core.json import (
     to_json_object,
 )
 from flowpay.core.knowledge import PostgresVectorStore
-from flowpay.core.llm.embedding.ollama import ollama_identity
+from flowpay.core.llm.embedding.ollama import ollama_identity, uses_local_ollama
 
 from scripts.development.environment import ROOT, PreparationError, execute
 from scripts.ingestion.corpus import CorpusSettings, prepare_corpus
@@ -93,10 +93,16 @@ def check_databases() -> None:
 
 
 async def check_embedding(settings: Settings, download: bool) -> None:
-    """检查配置指向的 Ollama；只在明确指定选项且模型缺失时下载，不替换已有模型。"""
+    """检查嵌入服务；本机 Ollama 核对版本与 digest，云端服务无需本地准备。"""
     embedding = settings.embedding
     if embedding is None:
         raise PreparationError("local.toml 未配置 embedding。")
+    if not uses_local_ollama(embedding):
+        print(
+            f"✓ 云端嵌入服务（{urlsplit(embedding.base_url).hostname}），跳过本地模型核对",
+            flush=True,
+        )
+        return
     endpoint = urlsplit(embedding.base_url)
     origin = f"{endpoint.scheme}://{endpoint.netloc}"
     try:

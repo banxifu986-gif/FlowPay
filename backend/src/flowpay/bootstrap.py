@@ -7,7 +7,7 @@ from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.config import Settings
 from flowpay.core.execution.contracts import Workflow
 from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
-from flowpay.core.llm.embedding.ollama import retrieval_input
+from flowpay.core.llm.embedding.ollama import query_input_for
 from flowpay.core.memory.contracts import MemoryPolicy
 from flowpay.router import create_stage, resolve_stage
 
@@ -32,8 +32,8 @@ def create_workflow(settings: Settings) -> Workflow:
         raise ValueError("RAG requires an openai-compatible chat model")
     if not settings.knowledge_collection_id or settings.embedding is None:
         raise ValueError("RAG requires a ready knowledge collection and embedding configuration")
-    if settings.embedding.name != "qwen3-embedding:0.6b":
-        raise ValueError("Current query formatting expects qwen3-embedding:0.6b")
+    # 查询侧输入约定随嵌入模型走，未知模型在这里失败，不猜格式。
+    query_input = query_input_for(settings.embedding)
     # 用业务工具的阶段直接读 dataset；缺少访问策略时在服务启动前失败，而不是运行到一半。
     if stage in {"manual-loop", "multi-agent"} and settings.sources_config is None:
         raise ValueError(f"Stage {stage} requires sources_config pointing at the access policy")
@@ -69,5 +69,5 @@ def create_workflow(settings: Settings) -> Workflow:
             max_notes=settings.memory_max_notes,
         )
     return create_stage(
-        stage, OpenAiChatModel(settings.model), retrieval_input, context_policy, memory_policy
+        stage, OpenAiChatModel(settings.model), query_input, context_policy, memory_policy
     )

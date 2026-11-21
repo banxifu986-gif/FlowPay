@@ -9,6 +9,7 @@ from flowpay.core.agent.trace import Tracer
 from flowpay.core.event_log import EventStore
 from flowpay.core.json import JsonObject, parse_json, require_list, require_object
 from flowpay.core.llm.embedding import EmbeddingClient, EmbeddingSettings
+from flowpay.core.llm.embedding.ollama import QUERY_INSTRUCTION, query_input_for
 from flowpay.core.llm.embedding.openai_embedding import OpenAiEmbeddingModel
 from flowpay.core.llm.embedding.settings import same_vector_space
 
@@ -197,3 +198,21 @@ def test_local_ollama_endpoints_share_one_vector_space() -> None:
     # 端口和外部主机仍然算不同部署。
     assert not same_vector_space({**current, "base_url": "http://127.0.0.1:9999/v1"}, current)
     assert not same_vector_space(settings("10.0.0.5").identity(), current)
+
+
+def test_query_input_convention_follows_the_model() -> None:
+    """查询侧输入约定按模型分流：qwen3 需指令前缀，bge-m3 用原始问题；未知模型拒绝。"""
+    qwen = EmbeddingSettings(
+        "qwen3-embedding:0.6b", "http://127.0.0.1:11434/v1", 1024, "K", revision="digest"
+    )
+    assert query_input_for(qwen)("问题") == f"Instruct: {QUERY_INSTRUCTION}\nQuery: 问题"
+    bge = EmbeddingSettings(
+        "BAAI/bge-m3",
+        "https://api.siliconflow.cn/v1",
+        1024,
+        "K",
+        revision="siliconflow-baai-bge-m3",
+    )
+    assert query_input_for(bge)("问题") == "问题"
+    with pytest.raises(ValueError, match="query input convention"):
+        query_input_for(EmbeddingSettings("unknown-model", "https://x.test/v1", 3, "K"))

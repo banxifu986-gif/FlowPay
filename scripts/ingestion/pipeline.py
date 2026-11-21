@@ -10,12 +10,16 @@ from typing import Literal
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
-from flowpay.core.json import to_json_object
+from flowpay.core.json import JsonObject, to_json_object
 from flowpay.core.knowledge import PostgresVectorStore
 from flowpay.core.knowledge.client import KnowledgeClient
 from flowpay.core.knowledge.models import MarkdownLocator
 from flowpay.core.llm.embedding import EmbeddingClient, EmbeddingSettings
-from flowpay.core.llm.embedding.ollama import ollama_identity, retrieval_input
+from flowpay.core.llm.embedding.ollama import (
+    ollama_identity,
+    query_input_for,
+    uses_local_ollama,
+)
 from flowpay.core.llm.embedding.openai_embedding import OpenAiEmbeddingModel
 from pydantic import TypeAdapter
 
@@ -34,6 +38,14 @@ RETRIEVAL_CHECKS = [
     ("同一个幂等键搭配不同请求参数会怎样？", "KB-BR-008", "幂等"),
     ("退款必须满足什么状态和时间窗口限制？", "KB-BR-012", "退款"),
 ]
+
+
+async def deployment_record(settings: EmbeddingSettings) -> JsonObject:
+    """当前嵌入部署的记录载荷：本机 Ollama 核对 digest，云端只记录向量空间身份。"""
+    if uses_local_ollama(settings):
+        return {"kind": "ollama", **to_json_object(await ollama_identity(settings))}
+    # 云端无 digest 可核对，混用防护由 same_vector_space 的 revision 身份承担。
+    return {"kind": "identity", **settings.identity()}
 
 
 class KnowledgePreparation:
@@ -67,9 +79,9 @@ class KnowledgePreparation:
         self.operation: Literal["build", "verify"] = operation
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
-        """核对 Ollama 部署并执行 build 或 verify；过程与结果写入当前 Run，失败上抛。"""
+        """核对嵌入部署并执行 build 或 verify；过程与结果写入当前 Run，失败上抛。"""
         _ = turn  # 构建对象由配置确定，运行输入仅用于记录任务名称。
-        deployment = await ollama_identity(self.embedding)
+        deployment = await deployment_record(self.embedding)
         await runtime.tracer.emit(
             "knowledge.build.plan", to_json_object(self.corpus.summary())
         )
@@ -79,7 +91,9 @@ class KnowledgePreparation:
             result = await self.build(client, runtime)
         else:
             result = await self.verify(client, runtime)
-        if await ollama_identity(self.embedding) != deployment:
+        # 复核构建期间部署未漂移：本机 Ollama 比较 digest，云端比较向量空间身份
+        # （身份含 revision，变化时同样拦截，云端无需另行处理）。
+        if await deployment_record(self.embedding) != deployment:
             raise RuntimeError("Model deployment changed during operation")
         await runtime.tracer.emit(
             "knowledge.preparation.result", to_json_object(result)
@@ -122,9 +136,9 @@ class KnowledgePreparation:
         embedded = await KnowledgeClient(
             self.builder, embedding, runtime.tracer
         ).embed_pending(corpus.collection_id)
-        # 发布前再次核对来源字节和模型 digest；变化时保留 building 集合供诊断。
+        # 发布前再次核对来源字节和模型部署；变化时保留 building 集合供诊断。
         await asyncio.to_thread(self.verify_source_files)
-        await ollama_identity(self.embedding)
+        await deployment_record(self.embedding)
         await asyncio.to_thread(
             self.builder.mark_ready, corpus.collection_id, corpus.expected_documents
         )
@@ -171,12 +185,14 @@ class KnowledgePreparation:
         ):
             raise ValueError("Collection release identity differs")
         search = KnowledgeClient(self.reader, embedding, runtime.tracer)
+        # 检索验收与产品同一套查询侧输入约定；约定未知时在写入前失败。
+        query_input = query_input_for(self.embedding)
         results: list[RetrievalCheckResult] = []
         documents = {doc.doc_id: (doc, chunks) for doc, chunks in corpus.documents}
         for question, expected_id, expected_text in RETRIEVAL_CHECKS:
             hits = await search.search(
                 corpus.collection_id,
-                retrieval_input(question),
+                query_input(question),
                 limit=3,
                 filters={"doc_type": "business_rule"},
             )
@@ -228,7 +244,7 @@ class KnowledgePreparation:
             await runtime.tracer.emit("knowledge.check.passed", to_json_object(result))
         empty = await search.search(
             corpus.collection_id,
-            retrieval_input("支付通知"),
+            query_input("支付通知"),
             filters={"doc_type": "not-a-published-type"},
         )
         if empty:

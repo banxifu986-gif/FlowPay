@@ -63,6 +63,8 @@ services:
       # 默认用下面 compose 起的 ollama 服务；换成远端 Ollama 就在 .env 里覆盖这一项。
       # 端口必须是 11434：知识集合的向量是在该端口建的，换端口会被向量空间校验判为不兼容。
       FLOWPAY_EMBEDDING_BASE_URL: ${FLOWPAY_EMBEDDING_BASE_URL:-http://ollama:11434/v1}
+      # 云端嵌入透传：密钥从 .env 注入容器，缺省为空时走本地 Ollama（无需密钥）。
+      FLOWPAY_EMBEDDING_API_KEY: ${FLOWPAY_EMBEDDING_API_KEY:-}
       # 聊天模型三项：密钥必填，地址与模型名留空时用 local.toml 里的默认值。
       FLOWPAY_MODEL_API_KEY: ${FLOWPAY_MODEL_API_KEY:?Set FLOWPAY_MODEL_API_KEY in .env}
       FLOWPAY_MODEL_BASE_URL: ${FLOWPAY_MODEL_BASE_URL:-}

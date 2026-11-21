@@ -30,7 +30,7 @@ if __package__ in {None, ""}:
 from scripts.development.environment import prepare_env
 
 ROOT = Path(__file__).resolve().parents[1]
-COLLECTION = "flowpay_docs_v1_qwen3_06b"
+COLLECTION = "flowpay_docs_v1_bge_m3"
 KNOWLEDGE_DUMP = "postgres/flowpay_knowledge.dump"
 # 数据集根目录必须有这两项，缺了说明路径指错了。知识库 dump 只在真要导入时才需要，
 # 因此不列在这里：已经灌过库的开发副本里通常没有它。

@@ -3,7 +3,7 @@ data_dir = "../../var/live"
 # 默认指向仓库同级解包的数据集；通常由 FLOWPAY_DATASET_ROOT 覆盖。
 dataset_path = "../../dataset/data"
 # 已发布的业务知识快照，排查阶段从这里开始检索。
-knowledge_collection_id = "flowpay_docs_v1_qwen3_06b"
+knowledge_collection_id = "flowpay_docs_v1_bge_m3"
 # 业务阶段（multi-agent / manual-loop）按这份策略访问 dataset；只读、按操作名登记、表列白名单。
 sources_config = "../policies/sources.toml"
 # 预置账号文件（specs/005）：本地文件、git 忽略，由 scripts/accounts.py 生成。
@@ -53,16 +53,21 @@ api_key_env = "FLOWPAY_MODEL_API_KEY"
 timeout_seconds = 60
 
 [model.request_options]
-max_tokens = 4096
-thinking = { type = "disabled" }
+max_completion_tokens = 4096
+# OpenAI 推理模型在 chat/completions 上不支持 function tools + reasoning_effort≠none；
+# 基准口径为无推理形态。要评估推理能力需实现 /v1/responses 适配器（遗留项）。
+reasoning_effort = "none"
 
-# 本地嵌入模型；revision 固定本次下载的 digest。
+# 云端嵌入：SiliconFlow 免费 BAAI/bge-m3（1024 维，与旧 Ollama qwen3-embedding 维度相同但向量空间不同）。
+# 注意：换嵌入服务必须重建知识集合（向量空间身份校验会拒绝混用），重建走 make db-setup 前先清旧集合。
+# 嵌入服务可为本地 Ollama（标准开发流）或云端 OpenAI 兼容 API；容器内地址经 FLOWPAY_EMBEDDING_BASE_URL 覆盖。
+# 换嵌入服务=换向量空间，需用新 collection_id 重建集合。
 [embedding]
 provider = "openai-compatible"
-name = "qwen3-embedding:0.6b"
-base_url = "http://127.0.0.1:11434/v1"
+name = "BAAI/bge-m3"
+base_url = "https://api.siliconflow.cn/v1"
 dimensions = 1024
-api_key_env = "OLLAMA_API_KEY"
-revision = "ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d"
-batch_size = 8
-timeout_seconds = 120
+api_key_env = "FLOWPAY_EMBEDDING_API_KEY"
+revision = "siliconflow-baai-bge-m3"
+batch_size = 32
+timeout_seconds = 60
