@@ -181,6 +181,39 @@ class VectorStore(Protocol):
         ...
 
 
+class KnowledgeWriter(VectorStore, Protocol):
+    """集合写入契约：知识构建流程依赖的最小写入面。
+
+    PostgresVectorStore 天然实现本协议；测试用替身据此构造。embed_pending 需要读侧
+    的 missing_embeddings，因此本协议继承 VectorStore——构建流程的 builder 实际上
+    读写兼备，读方法由实现方天然满足。
+    """
+
+    def create_collection(
+        self,
+        collection_id: str,
+        dataset_release_id: str,
+        dataset_manifest_sha256: str,
+        build_config: JsonObject,
+        dimensions: int,
+    ) -> object:
+        """登记集合身份；重复登记以首次为准。返回值随实现（快照或 None）。"""
+        ...
+
+    def save_document(self, collection_id: str, document: Document, chunks: list[Chunk]) -> None:
+        """原子保存一个文档快照及完整分块列表。"""
+        ...
+
+    def mark_ready(self, collection_id: str, expected_documents: dict[str, int]) -> None:
+        """核对完整文档清单后发布集合。"""
+        ...
+
+    def close(self) -> None:
+        """释放连接资源；构建流程结束时调用。"""
+        ...
+        ...
+
+
 class DocumentRetriever(Protocol):
     """运行期的文档检索能力，也是替换检索实现的接缝。
 

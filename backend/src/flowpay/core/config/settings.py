@@ -15,6 +15,8 @@ class ModelSettings:
     name 对应请求的 model，base_url 指向兼容服务；api_key_env 是密钥变量名，
     默认那个变量名不绑定供应商，换模型只改 .env，不改代码。
     request_options 保存供应商扩展参数，不得覆盖应用构造的消息和工具。
+    protocol 选择聊天协议（specs/008）：chat_completions 是现状口径；responses
+    是 OpenAI 推理模型的正式接口，由装配层据此选择适配器实现。
     """
 
     provider: str = "scripted"
@@ -22,11 +24,14 @@ class ModelSettings:
     base_url: str = "https://api.deepseek.com"
     api_key_env: str = "FLOWPAY_MODEL_API_KEY"
     timeout_seconds: float = 60
+    protocol: str = "chat_completions"
     request_options: JsonObject = field(default_factory=dict)
 
     def __post_init__(self):
         """拒绝非对象扩展参数以及对 messages、tools、model、stream 等保留字段的覆盖。"""
         require_object(self.request_options)
+        if self.protocol not in ("chat_completions", "responses"):
+            raise ValueError(f"Unknown model protocol: {self.protocol}")
         reserved = {"model", "messages", "tools", "stream", "stream_options"}
         if reserved & self.request_options.keys():
             raise ValueError("Model request_options cannot override reserved request fields")

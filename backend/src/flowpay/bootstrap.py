@@ -6,7 +6,9 @@ from flowpay.core.auth import AccountPolicy, TokenAuthenticator
 from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.config import Settings
 from flowpay.core.execution.contracts import Workflow
+from flowpay.core.llm.chat.contracts import ChatModel
 from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
+from flowpay.core.llm.chat.openai_responses import OpenAiResponsesModel
 from flowpay.core.llm.embedding.ollama import query_input_for
 from flowpay.core.memory.contracts import MemoryPolicy
 from flowpay.router import create_stage, resolve_stage
@@ -68,6 +70,10 @@ def create_workflow(settings: Settings) -> Workflow:
             semantic_limit=settings.memory_semantic_limit,
             max_notes=settings.memory_max_notes,
         )
-    return create_stage(
-        stage, OpenAiChatModel(settings.model), query_input, context_policy, memory_policy
+    # 协议分流（specs/008）：responses 走推理适配器，chat_completions 维持现状。
+    chat_model: ChatModel = (
+        OpenAiResponsesModel(settings.model)
+        if settings.model.protocol == "responses"
+        else OpenAiChatModel(settings.model)
     )
+    return create_stage(stage, chat_model, query_input, context_policy, memory_policy)

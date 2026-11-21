@@ -19,7 +19,8 @@ from flowpay.core.config.settings import Settings
 from flowpay.core.execution.contracts import TurnInput
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.json import JsonObject
-from flowpay.core.llm.embedding import EmbeddingSettings
+from flowpay.core.knowledge import Collection, Passage, PassageLookup, PendingChunk
+from flowpay.core.llm.embedding import EmbeddedBatch, EmbeddingSettings
 from flowpay.core.llm.embedding.ollama import ollama_identity, uses_local_ollama
 
 if TYPE_CHECKING:
@@ -130,27 +131,87 @@ def fake_ollama_tags(digest: str):
 
 
 class RecordingStore:
-    """记录写入调用的知识存储替身；不连接真实数据库。"""
+    """记录写入调用的知识存储替身；不连接真实数据库。
+
+    写侧方法由 Pipeline 的实际调用驱动；读侧方法按 VectorStore Protocol 补齐签名，
+    使本类成为该协议的合法替身（Pipeline 只需要这两个写入方法存在）。
+    """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
 
     def create_collection(
-        self, collection_id: str, release_id: str, sha256: str, config: JsonObject, dims: int
+        self,
+        collection_id: str,
+        dataset_release_id: str,
+        dataset_manifest_sha256: str,
+        build_config: JsonObject,
+        dimensions: int,
     ) -> None:
-        _ = collection_id, release_id, sha256, config, dims
+        _ = collection_id, dataset_release_id, dataset_manifest_sha256, build_config, dimensions
         self.calls.append("create_collection")
 
-    def save_document(self, collection_id: str, document, chunks) -> None:
+    def save_document(self, collection_id: str, document: object, chunks: object) -> None:  # noqa: ANN401
         _ = collection_id, document, chunks
         self.calls.append("save_document")
 
-    def mark_ready(self, collection_id: str, expected: dict[str, int]) -> None:
-        _ = collection_id, expected
+    def mark_ready(self, collection_id: str, expected_documents: dict[str, int]) -> None:
+        _ = collection_id, expected_documents
         self.calls.append("mark_ready")
 
     def close(self) -> None:
         self.calls.append("close")
+
+    # 以下读侧方法只为满足 VectorStore/KnowledgeWriter 协议签名；
+    # build/verify 测试用 FakeEmbeddings 替换 KnowledgeClient，它们不会被调用。
+    def get_collection(self, collection_id: str) -> Collection:
+        _ = collection_id
+        raise AssertionError("fake store should not read collections in these tests")
+
+    def missing_embeddings(self, collection_id: str, limit: int = 32) -> list[PendingChunk]:
+        _ = collection_id, limit
+        raise AssertionError("fake store should not read embeddings in these tests")
+
+    def save_embeddings(
+        self, collection_id: str, keys: list[tuple[str, int]], batch: EmbeddedBatch
+    ) -> None:
+        _ = collection_id, keys, batch
+        raise AssertionError("fake store should not save embeddings directly in these tests")
+
+    def search(
+        self,
+        collection_id: str,
+        query: EmbeddedBatch,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+    ) -> list[Passage]:
+        _ = collection_id, query, limit, filters
+        raise AssertionError("fake store should not search in these tests")
+
+    def search_hybrid(
+        self,
+        collection_id: str,
+        query: EmbeddedBatch,
+        text: str,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+        *,
+        keyword_limit: int = 20,
+        vector_limit: int = 20,
+        rrf_k: int = 60,
+    ) -> list[Passage]:
+        _ = collection_id, query, text, limit, filters, keyword_limit, vector_limit, rrf_k
+        raise AssertionError("fake store should not search in these tests")
+
+    def read_document(
+        self, collection_id: str, doc_id: str, filters: JsonObject | None = None
+    ) -> list[Passage]:
+        _ = collection_id, doc_id, filters
+        raise AssertionError("fake store should not read documents in these tests")
+
+    def read_passage(self, collection_id: str, doc_id: str, chunk_no: int) -> PassageLookup:
+        _ = collection_id, doc_id, chunk_no
+        raise AssertionError("fake store should not read passages in these tests")
 
 
 class RecordingEvents:

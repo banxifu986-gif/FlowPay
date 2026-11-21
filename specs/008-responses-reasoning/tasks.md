@@ -4,18 +4,18 @@
 
 ## Phase 1：Setup
 
-- [ ] T001 基线快照：从 `var/benchmark/20261121-full300-multi-agent.jsonl` 提取 96 题子集（每类前 16，与 run.py sample 口径一致），固化翻盘对照清单：逐题 pass/evidence/断言命中，存 `specs/008-responses-reasoning/baseline-96.jsonl`；记录总/多轮/单轮/证据四项与 110 题证据齐断言零命中的题型分布
-- [ ] T002 [P] 核对环境：`.env` 三键与代理、bge-m3 集合就绪；记录 `loader.py` 环境覆盖机制对 `protocol`/`request_options` 的支持现状（`FLOWPAY_MODEL_PROTOCOL` 需新增支持）
+- [x] T001 基线快照：从 `var/benchmark/20261121-full300-multi-agent.jsonl` 提取 96 题子集（每类前 16，与 run.py sample 口径一致），固化翻盘对照清单：逐题 pass/evidence/断言命中，存 `specs/008-responses-reasoning/baseline-96.jsonl`；记录总/多轮/单轮/证据四项与 110 题证据齐断言零命中的题型分布
+- [x] T002 [P] 核对环境：`.env` 三键与代理、bge-m3 集合就绪；记录 `loader.py` 环境覆盖机制对 `protocol`/`request_options` 的支持现状（`FLOWPAY_MODEL_PROTOCOL` 需新增支持）
 
 ## Phase 2：Foundational（US1 适配层）
 
-- [ ] T003 [P] [US1] `backend/src/flowpay/core/config/settings.py`：`ModelSettings.protocol` 字段（`chat_completions` 默认 / `responses`），保留字校验按协议分流；`loader.py` 支持 `FLOWPAY_MODEL_PROTOCOL` 环境覆盖；补校验用例（非法值拒绝、responses 端保留字）
-- [ ] T004 [P] [US1] `backend/src/flowpay/core/llm/chat/responses_stream.py`：`ResponsesStreamAccumulator`——事件白名单（output_item.added/done、output_text.delta、function_call_arguments.delta、reasoning_summary、completed/incomplete/failed）、文本增量、tool_calls 累积、reasoning_items 原文保留、usage 映射（input/output/total → prompt/completion/total）；先写失败用例（data-model.md 事件表逐行）
-- [ ] T005 [P] [US1] `backend/src/flowpay/core/llm/chat/openai_responses.py`：`OpenAiResponsesModel`——`prepare`（url/body：input items + tools + reasoning + stream 标记；不含密钥）、`invoke`（`client.responses.create(stream=True)`、逐帧喂聚合器、缺 completed 视为中断）、`capabilities`；chat 端等价的连接重试语义
-- [ ] T006 [US1] `openai_responses.py` 的 messages→input 翻译：system/user/assistant 文本、tool_calls → function_call item、tool 结果 → function_call_output、推理项按序回插（配对依赖 AgentTurn 的 tool_call_id 机制）；翻译表按 data-model.md；单测覆盖每种消息形态与混合序列
-- [ ] T007 [P] [US1] `backend/src/flowpay/bootstrap.py`：protocol 分流（responses → OpenAiResponsesModel）；`openai_responses.py` 内 `reasoning_effort` 白名单校验（low/medium/high，非法启动即败）；`request_options` 中该参数被适配器消费而非透传 body 顶层（data-model 约束）
-- [ ] T008 [US1] 集成测试：假 transport 模拟 Responses 流——完整多轮对话（含一次工具调用 + 推理项回传）走通 ChatModel Protocol 全链路；`model.request/response/chunk` 事件载荷形状断言（protocol 标记、reasoning_items 保留）
-- [ ] T009 [US1] 验收 US1：全量容器 pytest（基线 513 passed/0F 保持）+ ruff/basedpyright 全绿；报告 US1 完成状态
+- [x] T003 [P] [US1] `backend/src/flowpay/core/config/settings.py`：`ModelSettings.protocol` 字段（`chat_completions` 默认 / `responses`），保留字校验按协议分流；`loader.py` 支持 `FLOWPAY_MODEL_PROTOCOL` 环境覆盖；补校验用例（非法值拒绝、responses 端保留字）
+- [x] T004 [P] [US1] `backend/src/flowpay/core/llm/chat/responses_stream.py`：`ResponsesStreamAccumulator`——事件白名单（output_item.added/done、output_text.delta、function_call_arguments.delta、reasoning_summary、completed/incomplete/failed）、文本增量、tool_calls 累积、reasoning_items 原文保留、usage 映射（input/output/total → prompt/completion/total）；先写失败用例（data-model.md 事件表逐行）
+- [x] T005 [P] [US1] `backend/src/flowpay/core/llm/chat/openai_responses.py`：`OpenAiResponsesModel`——`prepare`（url/body：input items + tools + reasoning + stream 标记；不含密钥）、`invoke`（`client.responses.create(stream=True)`、逐帧喂聚合器、缺 completed 视为中断）、`capabilities`；chat 端等价的连接重试语义
+- [x] T006 [US1] `openai_responses.py` 的 messages→input 翻译：system/user/assistant 文本、tool_calls → function_call item、tool 结果 → function_call_output、推理项按序回插（配对依赖 AgentTurn 的 tool_call_id 机制）；翻译表按 data-model.md；单测覆盖每种消息形态与混合序列
+- [x] T007 [P] [US1] `backend/src/flowpay/bootstrap.py`：protocol 分流（responses → OpenAiResponsesModel）；`openai_responses.py` 内 `reasoning_effort` 白名单校验（low/medium/high，非法启动即败）；`request_options` 中该参数被适配器消费而非透传 body 顶层（data-model 约束）
+- [x] T008 [US1] 集成测试：假 transport 模拟 Responses 流——完整多轮对话（含一次工具调用 + 推理项回传）走通 ChatModel Protocol 全链路；`model.request/response/chunk` 事件载荷形状断言（protocol 标记、reasoning_items 保留）
+- [x] T009 [US1] 验收 US1：全量容器 pytest（基线 513 passed/0F 保持）+ ruff/basedpyright 全绿；报告 US1 完成状态
 
 ## Phase 3：US2（P0）推理增益 A/B
 
