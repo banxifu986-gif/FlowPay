@@ -430,11 +430,13 @@ async def main() -> None:
     output.mkdir(parents=True)
     alignment = evidence.chunk_alignment()
     cases = sample(blueprints(), args.per_type)
-    model = load_settings(args.config).model.name
+    model = load_settings(args.config).model
     print(f"题目 {len(cases)} 道，阶段 {args.stages}，输出 {output}")
     retrieval = "混合" if governance_overrides(args)["knowledge_hybrid"] else "纯向量"
+    effort = model.request_options.get("reasoning_effort") or "未配置"
+    reasoning_label = f"推理={effort}"
     print(
-        "治理配置："
+        f"协议={model.protocol}；{reasoning_label}；"
         + (
             "--governance（local.toml 默认值，检索固定纯向量）"
             if args.governance
@@ -447,11 +449,12 @@ async def main() -> None:
         "# Benchmark 对照报表",
         "",
         (
-            f"题目 {len(cases)} 道，模型 {model}。单次运行，阶段之间几道题的差距"
+            f"题目 {len(cases)} 道，模型 {model.name}。单次运行，阶段之间几道题的差距"
             "不足以区分策略差异与模型波动；方向性结论（某一级在哪类题上更强）才可读。"
         ),
         f"检索路径：{retrieval}；治理配置："
-        + ("local.toml 默认值" if args.governance else "基线关闭 006 新项"),
+        + ("local.toml 默认值" if args.governance else "基线关闭 006 新项")
+        + f"；协议={model.protocol}；{reasoning_label}",
         "",
         "",
         "两条独立的判据，不能互相替代：",
