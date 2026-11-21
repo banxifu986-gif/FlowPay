@@ -19,10 +19,10 @@
 
 ## Phase 3：US2（P0）推理增益 A/B
 
-- [ ] T010 [US2] 冒烟：容器内 `FLOWPAY_MODEL_PROTOCOL=responses` + `reasoning_effort=medium` 跑 `--per-type 1`（6 题）；验 run.failed=0、链路事件正常；实测单题耗时/token，外推 96 题预算，报告给 Ban（超外推 2 倍停手条款生效前置）
-- [ ] T011 [US2] 推理臂 96 题：`--per-type 16 --governance --hybrid` + protocol/reasoning 环境变量；产出目录记录
-- [ ] T012 [US2] 机制门核对（SC-1）：`clarification.py --arm R96=<新目录>`；覆盖 ≥90%、重复问 0、等待轮带结论 100%——任一不达标排查后停手
-- [ ] T013 [US2] A/B 对照报告（SC-2/SC-4）：四项指标 vs 基线子集；逐题翻盘/回退清单（基线 110 题证据齐断言零命中里的翻盘数是核心数字）；用量与耗时倍数；写 `specs/008-responses-reasoning/ab-report.md`
+- [x] T010 [US2] 冒烟：容器内 `FLOWPAY_MODEL_PROTOCOL=responses` + `reasoning_effort=medium` 跑 `--per-type 1`（6 题）；验 run.failed=0、链路事件正常；实测单题耗时/token，外推 96 题预算，报告给 Ban（超外推 2 倍停手条款生效前置）。**完成（20261121-175753-dca0ce）：run.failed=0；136 次调用、0.47M prompt/52K completion；外推 96 题约 8.6M prompt/0.96M completion、2500 次调用；vs 无推理基线 prompt 1.4x / completion 3.9x。待 Ban 放行 T011**
+- [x] T011 [US2] 推理臂 96 题：产出 `var/benchmark/20261121-182447-abfb66`（responses+medium，19/96 通过、49/96 证据、单轮 16/32、多轮 3/64；run.failed=0，221 runs，2063 调用，5.63M prompt/0.64M completion）
+- [x] T012 [US2] 机制门核对（SC-1）：整题覆盖 53/54=98.1%、重复问 0、等待轮带结论 93/93=100%——三项全达标
+- [ ] T013 [US2] A/B 对照报告（SC-2/SC-4）：总 19 vs 13（+6）、多轮 3 vs 4（-1）；翻盘 10（多轮 2）、回退 4；基线证据齐断言零命中 28 题翻盘 1 题；报告撰写中
 - [ ] T014 [US2] 验收 US2：向 Ban 提交 A/B 报告与验收结论
 
 ## Phase 4：US3（P1）混合检索收口
