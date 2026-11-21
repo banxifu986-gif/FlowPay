@@ -11,7 +11,7 @@ from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
 from flowpay.core.json import JsonObject, to_json_object
-from flowpay.core.knowledge import PostgresVectorStore
+from flowpay.core.knowledge import KnowledgeWriter, VectorStore
 from flowpay.core.knowledge.client import KnowledgeClient
 from flowpay.core.knowledge.models import MarkdownLocator
 from flowpay.core.llm.embedding import EmbeddingClient, EmbeddingSettings
@@ -65,16 +65,16 @@ class KnowledgePreparation:
         self,
         corpus: PreparedCorpus,
         embedding: EmbeddingSettings,
-        builder: PostgresVectorStore,
-        reader: PostgresVectorStore,
+        builder: KnowledgeWriter,
+        reader: VectorStore,
         dataset_root: Path,
         operation: Literal["build", "verify"],
     ) -> None:
         """保存导入计划、嵌入配置、读写存储和操作类型；连接由外部入口负责关闭。"""
         self.corpus: PreparedCorpus = corpus
         self.embedding: EmbeddingSettings = embedding
-        self.builder: PostgresVectorStore = builder
-        self.reader: PostgresVectorStore = reader
+        self.builder: KnowledgeWriter = builder
+        self.reader: VectorStore = reader
         self.dataset_root: Path = dataset_root
         self.operation: Literal["build", "verify"] = operation
 
