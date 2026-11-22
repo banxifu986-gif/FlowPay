@@ -145,7 +145,73 @@ class SharedTurn:
     clarification: ClarificationState = field(default_factory=ClarificationState)
     # 本轮全部模型调用的用量：worker 由 investigate 收尾并入，直连节点在调用点登记。
     usage_entries: list[UsageEntry] = field(default_factory=list)
+    # FR-2 工具链路 run 内禁用登记（specs/009）：元素为链路标识（如 embedding、
+    # sql:<source>、logs），由工具包装层写入；轮次终止随 SharedTurn 一起销毁，
+    # 不跨轮、不跨会话。
+    tool_outages: set[str] = field(default_factory=set)
+    # FR-4 子任务断点：worker 收尾登记增量进度，恢复由 dispatch 按幂等键过滤。
+    # 不写检查点——断点只经由 turn.progress 事件与恢复注入流转（specs/009）。
+    task_progress: dict[str, SubtaskProgress] = field(default_factory=dict)
+    # FR-9 单任务工具调用计数：键同 task_progress 的幂等键，轮内独立记账。
+    task_tool_calls: dict[str, int] = field(default_factory=dict)
 
     def record_usage(self, completion: ChatCompletion) -> None:
         """登记一次直连模型调用的用量；不经 AgentTurn 的节点（route/plan/直答）使用。"""
         self.usage_entries.append(from_completion(completion))
+
+
+@dataclass(frozen=True)
+class SubtaskProgress:
+    """单个 worker 子任务的断点状态（specs/009 data-model SubtaskProgress）。
+
+    done_keys/findings/evidence_refs 是收尾时刻的共享快照：查询记账与发现池
+    由并行调查员共用，子任务无法独占归属，恢复时按并集合回 SharedTurn。
+    """
+
+    key: str
+    worker: str
+    objective: str
+    done_keys: list[str]
+    findings: list[str]
+    evidence_refs: list[str]
+    finished: bool
+
+    @classmethod
+    def restore(cls, raw: object) -> SubtaskProgress | None:
+        """从 turn.progress 载荷重建；结构不合法返回 None，不让坏事件打断续跑。"""
+        try:
+            record = require_object(raw)
+            return cls(
+                require_text(record["key"]),
+                require_text(record["worker"]),
+                require_text(record["objective"]),
+                [require_text(item) for item in require_list(record["done_keys"])],
+                [require_text(item) for item in require_list(record["findings"])],
+                [require_text(item) for item in require_list(record["evidence_refs"])],
+                bool(record["finished"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+
+def task_key(worker: str, objective: str) -> str:
+    """幂等键 = worker 类型 + 任务目标；落盘与恢复用同一构造（specs/009 data-model）。"""
+    return f"{worker}:{objective.casefold().strip()}"
+
+
+def merge_task_progress(
+    entries: list[SubtaskProgress],
+) -> dict[str, SubtaskProgress]:
+    """按幂等键合并多条增量进度；已收束条目不被未收束同名条目覆盖。
+
+    并行 worker 的落库顺序无保证（Send 分发），因此合并以 finished 为准：
+    只有 finished=True 的后写者可以替换已收束条目，未收束条目永不回退进度。
+    """
+    merged: dict[str, SubtaskProgress] = {}
+    for entry in entries:
+        current = merged.get(entry.key)
+        # 已收束条目只让位于后写的已收束条目（重放事件按序归一，后写快照更完整）；
+        # 未收束条目只回填尚无进度或同样未收束的键，永不覆盖已收束进度。
+        if current is None or entry.finished or not current.finished:
+            merged[entry.key] = entry
+    return merged
