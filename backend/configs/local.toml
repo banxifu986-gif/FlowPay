@@ -25,7 +25,10 @@ failure_retry_attempts = 2
 failure_retry_delay_seconds = 1.0
 
 # 混合检索（specs/006 US4）：pg_trgm 关键词路 + 向量路 RRF，零新增依赖。
-knowledge_hybrid = true
+# 默认关闭（specs/008 US3）：qwen3 与 bge-m3 两个独立嵌入空间的全量评测中，混合检索
+# 与纯向量逐格相同（var/benchmark/20261121-full300-report.md 与 20261119-retrieval-full300.md），
+# 关键词路对本数据集无增益。开关保留：更换语料或改动分块策略后可手动开启复评。
+knowledge_hybrid = false
 knowledge_keyword_limit = 20
 knowledge_vector_limit = 20
 knowledge_rrf_k = 60

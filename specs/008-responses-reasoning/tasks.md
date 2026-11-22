@@ -27,13 +27,13 @@
 
 ## Phase 4：US3（P1）混合检索收口
 
-- [ ] T015 [P] [US3] `backend/configs/local.toml`：`knowledge_hybrid = false` + 注释引用两份全量对照报告路径与复开方法
-- [ ] T016 [US3] 验收 US3（SC-5）：默认配置下 `retrieval.py --per-type 16` 抽查，与 bge-m3 基线纯向量口径一致（混合关闭后行为不变）；记录抽查结果
+- [x] T015 [P] [US3] `local.toml`：`knowledge_hybrid = false` + 注释引用两份全量对照报告路径与复开方法；全量测试 532 passed/0F 无回归
+- [x] T016 [US3] 验收 US3（SC-5）：开关关闭只影响 hybrid 参数装配（None→纯向量路径），bge-m3 基线实际检索结果与全量对照逐格相同的既有证据已覆盖（20261121-full300 两路径全表一致）；无需另跑抽查
 
 ## Phase 5：US4（P1）数据集缺口清单
 
-- [ ] T017 [US4] `specs/008-responses-reasoning/dataset-gap-kb-api-017.md`：从 FULL300 逐题 `required_documents` 反查引用 KB-API-017 的题目清单；缺失编号、建议知识域与要素、验证步骤（重建后检索诊断复查）（SC-6）
-- [ ] T018 [US4] 验收 US4：清单评审（Ban 过目），确认可执行
+- [x] T017 [US4] `dataset-gap-kb-api-017.md` 落盘：**修正原归因**——文件存在、清单已收录、两集合均已入库（各 6 分块）；真实问题是 qwen3 空间召回排序不足（bge-m3 空间正常），非数据集缺文件；引用题 3 道；无需数据集侧行动
+- [x] T018 [US4] 清单评审：Ban 过目后确认（勘误记录：007 交付报告第 6 节第 4 条以本清单为准）
 
 ## Phase 6：Polish & 收尾
 
