@@ -39,3 +39,6 @@ var/
 
 # IDE
 .idea/
+
+# Flow Wiki：独立 git 仓库（docs/wiki 内自带 .git），不进产品仓
+/docs/wiki/
