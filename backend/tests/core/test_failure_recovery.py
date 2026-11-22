@@ -124,7 +124,12 @@ TRANSIENT_ERRORS = [
 ]
 
 
-@pytest.mark.parametrize("error", DETERMINISTIC_ERRORS, ids=lambda e: f"{e.status_code}")
+def _status_id(error: ModelHTTPError) -> str:
+    """参数化用例 ID：取状态码区分白名单形态。"""
+    return f"{error.status_code}"
+
+
+@pytest.mark.parametrize("error", DETERMINISTIC_ERRORS, ids=_status_id)
 def test_deterministic_whitelist_forms(error: Exception) -> None:
     """白名单①②：输入类 4xx 与参数确定性拒绝进确定性档，且必不可重试。"""
     info = classify_failure(error)
