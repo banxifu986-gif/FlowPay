@@ -27,10 +27,13 @@ def test_bare_kb_doc_ref_passes() -> None:
     """裸 KB-{模块}-{序号}#c{片段} 引用（模型实际输出的主流格式）放行。
 
     回归：T026 冒烟实证只认 [doc:...] 会把带 KB 引用的正确断言误降级
-    （session_6b11c0 五处"未能核实："前缀污染）。
+    （session_6b11c0 五处"未能核实："前缀污染）。用例必须含断言线索词，
+    否则句子本就豁免，测不出引用模式是否生效。
     """
     text = (
-        "**KB-API-014#c006**：FP-4041 的定义涵盖 Payment 不存在、属于其他 Account，或当前不可见。"  # noqa: E501
+        "- **KB-API-014#c006、KB-TS-012#c001、KB-TS-012#c002**：Payment 查询的 FP-4041 可表示"
+        "资源不存在、属于其他 Account，或对当前 Account 不可见；"  # noqa: E501
+        "错误刻意不透露资源是否属于其他租户。"
     )
     audit = check_citations(text)
     assert audit.text == text
@@ -40,7 +43,7 @@ def test_bare_kb_doc_ref_passes() -> None:
 def test_bold_multi_module_kb_ref_passes() -> None:
     """多模块前缀（KB-REL / KB-BR / KB-TS）与加粗包裹的引用一律放行。"""
     for ref in ("**KB-REL-002#c001**", "KB-BR-007#c002", "`KB-TS-012#c007`"):
-        text = f"内部状态不会改写，依据 {ref} 说明版本差异。"
+        text = f"内部状态不会改写，依据 {ref} 该版本下状态为已成功。"
         audit = check_citations(text)
         assert audit.text == text, ref
         assert audit.downgraded == ()
