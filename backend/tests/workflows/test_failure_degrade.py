@@ -8,7 +8,7 @@
 
 import json
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 import pytest
 
@@ -556,3 +556,38 @@ async def test_turn_progress_written_once_per_task_across_parallel_workers(tmp_p
     finally:
         await manager.shutdown()
         resources.close()
+
+
+def test_dispatch_filters_finished_subtasks_on_resume() -> None:
+    """FR-4 节点幂等：恢复轮 dispatch 按注入的 task_progress 跳过已收束子任务。"""
+    from flowpay.workflows.multi_agent.graph import dispatch
+    from flowpay.workflows.multi_agent.state import GraphState, InvestigationTask
+
+    done_payload = to_json_object(
+        SubtaskProgress(
+            key=task_key("doc_worker", "查明重试策略"),
+            worker="doc_worker",
+            objective="查明重试策略",
+            done_keys=["search:重试策略"],
+            findings=[],
+            evidence_refs=[],
+            finished=True,
+        )
+    )
+    state: GraphState = {
+        "user_message": "帮我看看",
+        "saved_state": {"task_progress": [done_payload]},
+        "intent": "troubleshoot",
+        "tasks": [
+            InvestigationTask(kind="docs", objective="查明重试策略"),
+            InvestigationTask(kind="sql", objective="查明扣款状态"),
+        ],
+        "reports": [],
+        "answer": "",
+        "waiting": False,
+    }
+    sends = dispatch(state)
+    assert isinstance(sends, list) and len(sends) == 1
+    payload = cast("GraphState", sends[0].arg)
+    remaining = [task.objective for task in payload["tasks"]]
+    assert remaining == ["查明扣款状态"]  # 已收束子任务被过滤，其余照常分发

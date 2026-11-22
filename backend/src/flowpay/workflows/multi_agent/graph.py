@@ -27,7 +27,7 @@ from flowpay.core.chat.usage_view import sum_entries
 from flowpay.core.execution.contracts import TurnInput, TurnResult
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
-from flowpay.core.json import JsonObject, to_json_object
+from flowpay.core.json import JsonObject, require_list, require_object, to_json_object
 from flowpay.core.knowledge.passages import (
     EVIDENCE_MAX_CHARS,
     EVIDENCE_MAX_PASSAGES,
@@ -53,6 +53,7 @@ from .investigation import (
     plan_node,
     sql_worker_node,
     synthesize_node,
+    worker_name,
 )
 from .simple import chitchat_node, doc_qa_node
 from .state import (
@@ -60,8 +61,10 @@ from .state import (
     GraphState,
     NodeOutput,
     SharedTurn,
+    SubtaskProgress,
     merge_old_findings,
     restore_findings,
+    task_key,
 )
 
 
@@ -88,9 +91,21 @@ def fold_finding_record_ids(shared: SharedTurn) -> None:
 
 
 def dispatch(state: GraphState) -> list[Send] | str:
-    """plan 之后的条件边：每个子任务经 Send 分发给对应调查员并行执行；没有任务直接进汇总。"""
+    """plan 之后的条件边：每个子任务经 Send 分发给对应调查员并行执行；没有任务直接进汇总。
+
+    恢复轮按 manager 注入的 task_progress 过滤已收束子任务（specs/009 FR-4）：
+    幂等键命中且 finished 的任务跳过，其余照常分发——节点级续跑的零重查从
+    分发入口生效；非恢复轮 saved_state 无该键，行为不变。
+    """
+    finished = {
+        progress.key
+        for raw in require_list(state["saved_state"].get("task_progress") or [])
+        if (progress := SubtaskProgress.restore(raw)) is not None and progress.finished
+    }
     sends: list[Send] = []
     for task in state["tasks"]:
+        if task_key(worker_name(task.kind), task.objective) in finished:
+            continue
         payload: GraphState = {
             "user_message": state["user_message"],
             "saved_state": state["saved_state"],
@@ -209,6 +224,25 @@ class MultiAgentWorkflow:
             retrieved=retrieved,
             clarification=ClarificationState.restore(turn.saved_state.get("clarification")),
         )
+        # FR-4 恢复预填：manager 注入的 task_progress（已按幂等键合并的 turn.progress
+        # 载荷）重建已完成子任务的查询键、发现与证据引用池——workflow 不读事件库
+        # （审查 C2），预填只在恢复轮发生（注入方只对 resume 写入该键）。
+        for raw in require_list(turn.saved_state.get("task_progress") or []):
+            progress = SubtaskProgress.restore(raw)
+            if progress is None:
+                continue
+            shared.task_progress[progress.key] = progress
+            shared.done.update(progress.done_keys)
+            shared.seen.update(progress.evidence_refs)
+            payload = require_object(raw)
+            known = {(f.tool, f.target, f.digest) for f in shared.findings}
+            for finding in restore_findings(payload.get("findings_detail") or []):
+                # 各任务快照都携带共享池累计值，按 (tool, target, digest) 去重并回。
+                if (finding.tool, finding.target, finding.digest) not in known:
+                    shared.findings.append(finding)
+            shared.retrieved.add(
+                PassageSet.restore(payload.get("evidence") or [], runtime.collection_id).all()
+            )
         revision = shared.case.apply(conditions_in(turn.user_message))
         discard_stale(shared, revision.changed)
         fold_finding_record_ids(shared)
@@ -255,7 +289,9 @@ class MultiAgentWorkflow:
         # 跨轮发现封顶：最旧条目合并为摘要条目，改口作废对合并条目仍命中（specs/003 FR-11）。
         shared.findings = merge_old_findings(shared.findings, FINDINGS_CAP)
         checkpoint: JsonObject = {
-            **turn.saved_state,
+            # 注入的 task_progress 不进检查点：断点的持久形态是 turn.progress 事件，
+            # 泄进检查点会让后续普通轮把相同目标误判为已完成（specs/009 data-model）。
+            **{k: v for k, v in turn.saved_state.items() if k != "task_progress"},
             "case": to_json_object(shared.case),
             "clarification": to_json_object(shared.clarification),
             "queried": sorted(shared.done),
