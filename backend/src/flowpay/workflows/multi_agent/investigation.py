@@ -25,7 +25,14 @@ from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.execution.contracts import TurnInput
 from flowpay.core.execution.failures import classify_failure
 from flowpay.core.execution.runtime import AgentRuntime
-from flowpay.core.json import JsonObject, parse_json, require_list, require_object, require_text
+from flowpay.core.json import (
+    JsonObject,
+    parse_json,
+    require_list,
+    require_object,
+    require_text,
+    to_json_object,
+)
 from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.knowledge.tools import (
     DocumentReadArguments,
@@ -65,7 +72,9 @@ from .state import (
     Node,
     NodeOutput,
     SharedTurn,
+    SubtaskProgress,
     WorkerReport,
+    task_key,
 )
 
 SUPERVISOR_PROMPT = """你是支付平台的排查协调者。根据用户的问题拆解调查，调用 set_tasks 报告子任务。
@@ -690,6 +699,11 @@ def budget_report(
     return WorkerReport(worker, clip_text(text, budget) if budget > 0 else text)
 
 
+def worker_name(kind: str) -> str:
+    """kind → Send 目标与断点载荷共用的 worker 名（specs/009 data-model）。"""
+    return "sql_worker" if kind == "sql" else "doc_worker"
+
+
 async def investigate(
     agent: AgentTurn,
     shared: SharedTurn,
@@ -708,28 +722,65 @@ async def investigate(
     基线切片产出预算说明报告——故障与耗尽都不让整轮失败（specs/003 FR-10）；
     取消随 CancelledError 穿透。报告正文按 policy.report_char_budget 产出端
     截断（0=不截断）。无论以报告还是追问收束，本轮用量都在收尾并入共享。
+
+    非取消的每个收束出口都登记子任务断点（specs/009 FR-4，收束口径含错误与
+    预算收束）并写 turn.progress 事件。
     """
     baseline = len(shared.findings)
     budget = context_policy.report_char_budget if context_policy else 0
+
+    async def persist_progress() -> None:
+        """子任务收尾登记断点并发 turn.progress 事件（specs/009 FR-4）。
+
+        快照是收尾时刻共享池的累计值：查询记账与发现池由并行调查员共用，
+        子任务不独占归属，恢复按并集合回。载荷在 data-model 七字段之外携带
+        findings_detail/evidence（Finding 与 Passage 全量 JSON），供恢复重建
+        简报与引用池——JSON 超集，未知字段按既有纪律不阻断旧消费方。
+        取消路径不落盘，由既有取消语义收尾。
+        """
+        key = task_key(worker_name(worker), objective)
+        progress = SubtaskProgress(
+            key=key,
+            worker=worker_name(worker),
+            objective=objective,
+            done_keys=sorted(shared.done),
+            findings=[finding.digest for finding in shared.findings],
+            evidence_refs=sorted({*(p.id for p in shared.retrieved.all()), *shared.seen}),
+            finished=True,
+        )
+        shared.task_progress[key] = progress
+        await agent.runtime.tracer.emit(
+            "turn.progress",
+            {
+                **to_json_object(progress),
+                "findings_detail": [to_json_object(finding) for finding in shared.findings],
+                "evidence": [to_json_object(p) for p in shared.retrieved.all()],
+            },
+        )
+
     try:
         while agent.may_think():
             if stop and stop():
                 # 发起追问的调查员没有结论可交：本轮的报告只来自其余调查员，
                 # 追问正文由汇总节点按"已查到 + 仍需补充"组织（specs/007 FR-4）。
+                await persist_progress()
                 return {"reports": []}
             reply = await agent.think()
             if reply.is_answer:
                 shared.seen.update(agent.seen)
+                await persist_progress()
                 text = clip_text(reply.text, budget) if budget > 0 else reply.text
                 return {"reports": [WorkerReport(worker, text)]}
             for action in reply.actions:
                 agent.observe(await agent.perform(action))
             shared.seen.update(agent.seen)
+        await persist_progress()
         return {"reports": [budget_report(shared, worker, baseline, budget)]}
     except Exception as error:  # CancelledError 继承 BaseException，自然穿透。
         # 故障路径也要并入已见编号：observe 过的编号经 findings 简报进入后续请求，
         # 不并入则 synthesize 引用它们会被误拦一次（specs/003 FR-5 同源口径）。
         shared.seen.update(agent.seen)
+        await persist_progress()
         return {"reports": [error_report(worker, objective, error, budget)]}
     finally:
         shared.usage_entries.extend(agent.usage_entries)

@@ -476,3 +476,83 @@ async def test_partial_evidence_answers_with_unverified_mark(tmp_path: Path) -> 
     finally:
         await manager.shutdown()
         resources.close()
+
+
+def progress_events(events: list[object]) -> list[JsonObject]:
+    """提取 turn.progress 载荷；供断点落盘断言。"""
+    return [
+        require_object(require_object(e)["payload"])
+        for e in events
+        if require_object(e)["type"] == "turn.progress"
+    ]
+
+
+async def test_worker_completion_persists_turn_progress(tmp_path: Path) -> None:
+    """FR-4 断点落盘：worker 子任务收尾写 turn.progress，载荷为 SubtaskProgress 全量字段。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])]),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion("已根据调查报告回答。"),
+    ]
+    manager, resources = make_manager(tmp_path, model, Search())
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        events = manager.store.read(sid)
+        payloads = progress_events(events)
+        assert len(payloads) == 1  # 单任务收尾恰一次
+        payload = payloads[0]
+        assert require_text(payload["worker"]) == "doc_worker"
+        assert require_text(payload["objective"]) == "查明重试策略"
+        assert require_text(payload["key"]) == task_key("doc_worker", "查明重试策略")
+        assert payload["finished"] is True
+        # 已查询键并入 SharedTurn.done 语义：search 键在案。
+        assert "search:重试策略" in require_list(payload["done_keys"])
+        assert require_list(payload["findings"])
+        assert require_list(payload["evidence_refs"])
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_turn_progress_written_once_per_task_across_parallel_workers(tmp_path: Path) -> None:
+    """Send 并行两任务：各收尾恰一次，幂等键不重复（防重复收尾）。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(
+            calls=[
+                tasks_call(
+                    "t1",
+                    [
+                        {"kind": "docs", "objective": "查明重试策略"},
+                        {"kind": "docs", "objective": "查明退避规则"},
+                    ],
+                )
+            ]
+        ),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion(calls=[search_call("s2", "退避规则")]),
+        completion("退避规则：同样按文档处理 [doc:RULE-1#c001]。"),
+        completion("已根据调查报告回答。"),
+    ]
+    manager, resources = make_manager(tmp_path, model, Search(), max_concurrency=1)
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        payloads = progress_events(manager.store.read(sid))
+        assert sorted(require_text(p["objective"]) for p in payloads) == [
+            "查明退避规则",
+            "查明重试策略",
+        ]
+        keys = [require_text(p["key"]) for p in payloads]
+        assert len(keys) == len(set(keys))  # 幂等键不重复
+    finally:
+        await manager.shutdown()
+        resources.close()
