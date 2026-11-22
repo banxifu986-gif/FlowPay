@@ -36,9 +36,18 @@ from flowpay.workflows.multi_agent.state import (
     merge_task_progress,
     task_key,
 )
-from tests.core.principals import INTERNAL
+from tests.core.principals import INTERNAL, MERCHANT
 
-from .fixtures import Model, Search, completion, hit, intent_call, search_call, tasks_call
+from .fixtures import (
+    Model,
+    Search,
+    completion,
+    conversation,
+    hit,
+    intent_call,
+    search_call,
+    tasks_call,
+)
 from .test_clarification import response_call
 from .test_multi_agent import make_manager
 
@@ -591,3 +600,65 @@ def test_dispatch_filters_finished_subtasks_on_resume() -> None:
     payload = cast("GraphState", sends[0].arg)
     remaining = [task.objective for task in payload["tasks"]]
     assert remaining == ["查明扣款状态"]  # 已收束子任务被过滤，其余照常分发
+
+
+async def test_resume_continues_from_breakpoint_without_requery(tmp_path: Path) -> None:
+    """US2 集成（SC-4 可证伪）：多子任务轮次中断→显式继续，恢复后零重查。
+
+    两任务收束后 synthesize 硬失败（run.failed）：断点已随 turn.progress 落盘；
+    显式继续后 plan 复产出相同目标 → dispatch 按断点过滤 → 两个 worker 不再
+    执行（knowledge.request 总数不变）、恢复轮日计量为 0、并发名额守恒。
+    """
+    from datetime import UTC, datetime
+
+    objectives: list[JsonObject] = [
+        {"kind": "docs", "objective": "查明重试策略"},
+        {"kind": "docs", "objective": "查明退避规则"},
+    ]
+    model = Model()
+    model.responses = [
+        # 轮 1：两个子任务都收束（断点落盘），synthesize 硬失败。
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(calls=[tasks_call("t1", objectives)]),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion(calls=[search_call("s2", "退避规则")]),
+        completion("退避规则：同样按文档处理 [doc:RULE-1#c001]。"),
+        RuntimeError("synthesize boom"),
+        # 轮 2（显式继续）：相同目标重新拆解 → dispatch 过滤 → 直接汇总。
+        completion(calls=[intent_call("i2", "troubleshoot")]),
+        completion(calls=[tasks_call("t2", objectives)]),
+        completion("已根据调查报告回答。\n\n[doc:RULE-1#c001]"),
+        # 并发守恒检查轮：新会话闲聊直答。
+        completion(calls=[intent_call("i3", "chitchat")]),
+        conversation("你好！我可以帮你排查支付与 Webhook 问题。"),
+    ]
+    manager, resources = make_manager(tmp_path, model, Search(), max_concurrency=1)
+    try:
+        sid = require_text((await manager.create_session(MERCHANT))["id"])
+        await manager.submit_message(sid, "one", "帮我看看这笔支付为什么没收到通知", MERCHANT)
+        await manager.tasks[sid]
+        failed = await manager.get_session(sid, MERCHANT)
+        assert require_text(failed["status"]) == "failed"  # 中断形态
+        events = manager.store.read(sid)
+        assert len(progress_events(events)) == 2  # 两个子任务断点已落盘
+
+        await manager.resume_run(sid, "resume", MERCHANT)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, MERCHANT)
+        events = manager.store.read(sid)
+        assert require_text(view["status"]) == "completed"  # 恢复轮正常完成
+        # ① SC-4 零重查：knowledge.request 总数保持轮 1 的 2 次（恢复轮零请求）。
+        assert len([e for e in events if e["type"] == "knowledge.request"]) == 2
+        # ② 恢复轮日回合计量为 0：两个 run.started 落库但只计 1。
+        assert len([e for e in events if e["type"] == "run.started"]) == 2
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        assert manager.store.daily_run_count(day) == 1
+        # ③ 并发名额守恒：恢复结束后商户可继续提交（未净减）。
+        other = require_text((await manager.create_session(MERCHANT))["id"])
+        await manager.submit_message(other, "next", "你好，你能做什么？", MERCHANT)
+        await manager.tasks[other]
+        assert require_text((await manager.get_session(other, MERCHANT))["status"]) == "completed"
+    finally:
+        await manager.shutdown()
+        resources.close()
