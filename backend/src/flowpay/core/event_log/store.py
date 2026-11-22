@@ -198,6 +198,8 @@ class EventStore(AsyncEventWriter):
         """按 UTC 日期统计 run.started；商户归属取自同会话的 session.created。
 
         时间戳在事件 JSON 内，按前 10 位日期比较；user_id 为 None 时统计全局。
+        resumed=true 的恢复轮 run.started 照常落库但不计数（specs/009 FR-5）：
+        同一轮次的恢复不新增日回合计量，只补记实际发生的模型/工具调用。
         """
         with self.connect() as db:
             row = cast(
@@ -208,6 +210,7 @@ class EventStore(AsyncEventWriter):
                     JOIN events c ON c.session_id=r.session_id AND c.type='session.created'
                     WHERE r.type='run.started'
                       AND substr(json_extract(r.data,'$.timestamp'),1,10)=?
+                      AND COALESCE(json_extract(r.data,'$.payload.resumed'),0)=0
                       AND (? IS NULL OR json_extract(c.data,'$.payload.user_id')=?)
                     """,
                     (day, user_id, user_id),

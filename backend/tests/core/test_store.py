@@ -143,3 +143,53 @@ def test_run_view_requires_current_start_metadata(tmp_path: Path) -> None:
     )
     with pytest.raises(ValidationError):
         build_session_view(store.read("s"))
+
+
+def test_daily_run_count_ignores_resumed_runs(tmp_path: Path) -> None:
+    """FR-5 计量修正：resumed=true 的 run.started 照常落库但不计入日回合（同轮不重复计数）。"""
+    from datetime import UTC, datetime
+
+    store = EventStore(tmp_path / "events.sqlite")
+    day = datetime.now(UTC).strftime("%Y-%m-%d")
+    identity = {"workflow": {"id": "w", "version": "1"}}
+    store.append(
+        "s1",
+        [("session.created", {**identity, "user_id": "u1"})],
+        run_id="r0",
+    )
+    store.append(
+        "s1",
+        [
+            (
+                "run.started",
+                {
+                    "request_id": "a",
+                    "input": "question",
+                    "resumed": False,
+                    "resumed_from": None,
+                    "config": {},
+                    **identity,
+                },
+            )
+        ],
+        run_id="r1",
+    )
+    store.append(
+        "s1",
+        [
+            (
+                "run.started",
+                {
+                    "request_id": "a",
+                    "input": "question",
+                    "resumed": True,
+                    "resumed_from": "r1",
+                    "config": {},
+                    **identity,
+                },
+            )
+        ],
+        run_id="r2",
+    )
+    assert store.daily_run_count(day) == 1
+    assert store.daily_run_count(day, "u1") == 1

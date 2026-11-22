@@ -333,6 +333,17 @@ class SessionManager:
             "config": config_snapshot,
             "workflow": self.identity,
         }
+        saved_state = session["state"]
+        if resume:
+            # FR-4 节点级断点：恢复轮把合并后的子任务进度注入 saved_state，
+            # 由 workflow 预填 SharedTurn 并在 dispatch 过滤已完成子任务——
+            # 读取归 manager 层，workflow 不碰事件库（审查 C2）。
+            saved_state = {
+                **saved_state,
+                "task_progress": await self._collect_subtask_progress(
+                    session["id"], session["runs"][-1]["id"]
+                ),
+            }
         return PreparedRun(
             run_id=new_id("run"),
             principal=principal,
@@ -340,10 +351,37 @@ class SessionManager:
             workflow_input=TurnInput(
                 user_message=input_message,
                 chat_history=session["messages"],
-                saved_state=session["state"],
+                saved_state=saved_state,
                 resumed=resume,
             ),
         )
+
+    async def _collect_subtask_progress(
+        self, session_id: str, resume_from: str
+    ) -> list[JsonObject]:
+        """读取恢复链上的 turn.progress 事件并按幂等键合并（specs/009 FR-4）。
+
+        链 = 被恢复的 run 经 resumed_from 回溯的全部祖先轮：链上的增量并集才
+        是完整断点（恢复轮只写新收束的子任务，祖先轮的进度必须一并带入）。
+        普通轮（非恢复链）的 progress 不注入——历史完成任务不会误过滤新轮。
+        """
+        events = await asyncio.to_thread(self.store.read, session_id)
+        chain: set[str] = set()
+        cursor: str | None = resume_from
+        while cursor is not None and cursor not in chain:
+            chain.add(cursor)
+            started = next(
+                (e for e in events if e["type"] == "run.started" and e["run_id"] == cursor),
+                None,
+            )
+            resumed_from = started["payload"].get("resumed_from") if started is not None else None
+            cursor = resumed_from if isinstance(resumed_from, str) else None
+        entries = [
+            e["payload"]
+            for e in events
+            if e["type"] == "turn.progress" and e["run_id"] in chain
+        ]
+        return merge_progress_payloads(entries)
 
     async def _persist_run(self, session_id: str, prepared: PreparedRun) -> TurnRecord:
         """原子提交用户消息与开始事件；继续运行不重复用户消息，提交期间取消需补写中断。"""
@@ -708,3 +746,21 @@ def _seconds_until_utc_midnight() -> int:
     now = datetime.now(UTC)
     tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return max(1, int((tomorrow - now).total_seconds()))
+
+
+def merge_progress_payloads(entries: list[JsonObject]) -> list[JsonObject]:
+    """按幂等键合并 turn.progress 载荷；已收束条目不被未收束覆盖（specs/009 FR-4）。
+
+    core 层不解析 workflow 实体：以原始 JSON 的 key/finished 字段裁决，与
+    workflow 侧 merge_task_progress 的合并口径一致。缺 key 的坏载荷跳过，
+    不阻塞恢复注入。
+    """
+    merged: dict[str, JsonObject] = {}
+    for entry in entries:
+        key = entry.get("key")
+        if not isinstance(key, str):
+            continue
+        current = merged.get(key)
+        if current is None or entry.get("finished") is True or current.get("finished") is not True:
+            merged[key] = entry
+    return list(merged.values())

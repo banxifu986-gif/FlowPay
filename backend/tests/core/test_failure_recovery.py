@@ -1,4 +1,5 @@
 # 回归测试：失败分类与恢复策略映射（specs/006 US2）。
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -6,13 +7,14 @@ import pytest
 from flowpay.core.config import Settings
 from flowpay.core.event_log import EventStore
 from flowpay.core.execution.contracts import TurnInput, TurnResult
+from flowpay.core.execution.errors import QuotaExceeded
 from flowpay.core.execution.failures import FailureInfo, classify_failure
 from flowpay.core.execution.manager import SessionManager
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.execution.stage import StageCard
-from flowpay.core.json import require_object, require_text
+from flowpay.core.json import JsonObject, require_list, require_object, require_text
 from flowpay.core.llm.chat.http_error import ModelHTTPError
-from tests.core.principals import INTERNAL
+from tests.core.principals import INTERNAL, MERCHANT
 
 
 @pytest.mark.parametrize(
@@ -174,3 +176,108 @@ async def test_deterministic_error_keeps_manager_semantics(tmp_path: Path) -> No
     assert require_text(error["category"]) == "other"
     assert not [e for e in runtime.store.read(sid) if e["type"] == "run.retry"]
     assert workflow.calls == 1
+
+
+class ResumeProbeWorkflow:
+    """首轮失败并发出断点事件，续跑轮记录 TurnInput；恢复语义的可控探针。
+
+    gate 设置后恢复轮在 run 内等待，供并发预留断言在恢复运行中插入检查。
+    """
+
+    id: str = "resume-probe"
+    version: str = "1"
+    card: StageCard = StageCard(label="ResumeProbe", description="resume fixture")
+
+    def __init__(self, progress_payloads: list[JsonObject]) -> None:
+        self.progress_payloads: list[JsonObject] = progress_payloads
+        self.turns: list[TurnInput] = []
+        self.gate: asyncio.Event | None = None
+
+    async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
+        self.turns.append(turn)
+        if len(self.turns) == 1:
+            for payload in self.progress_payloads:
+                await runtime.tracer.emit("turn.progress", payload)
+            raise RuntimeError("boom")
+        if self.gate is not None:
+            await self.gate.wait()
+        return TurnResult("ok", {})
+
+
+async def test_resume_bypasses_daily_count_and_injects_progress(tmp_path: Path) -> None:
+    """FR-5 计量修正 + FR-4 注入：恢复轮不计日回合，saved_state 注入合并后的断点。
+
+    日上限 2、首轮已计 1：若恢复轮的 run.started 再计数则 2>=2 被拒——恢复
+    成功本身证明过滤生效；注入载荷按幂等键合并，已收束条目保留。
+    """
+    payloads: list[JsonObject] = [
+        {
+            "key": "doc_worker:查明",
+            "worker": "doc_worker",
+            "objective": "查明",
+            "done_keys": [],
+            "findings": [],
+            "evidence_refs": [],
+            "finished": False,
+        },
+        {
+            "key": "doc_worker:查明",
+            "worker": "doc_worker",
+            "objective": "查明",
+            "done_keys": ["search:a"],
+            "findings": [],
+            "evidence_refs": ["doc:RULE-1#c001"],
+            "finished": True,
+        },
+    ]
+    workflow = ResumeProbeWorkflow(payloads)
+    settings = Settings(
+        tmp_path,
+        tmp_path / "dataset",
+        failure_retry_attempts=0,
+        quota_internal_daily_turns=2,
+    )
+    runtime = SessionManager(EventStore(tmp_path / "sessions.sqlite"), workflow, settings)
+    sid = (await runtime.create_session(INTERNAL))["id"]
+    await runtime.submit_message(sid, "one", "question", INTERNAL)
+    await runtime.tasks[sid]
+    assert (await runtime.get_session(sid, INTERNAL))["status"] == "failed"
+    await runtime.resume_run(sid, "resume", INTERNAL)
+    await runtime.tasks[sid]
+    assert (await runtime.get_session(sid, INTERNAL))["status"] == "completed"
+    resumed = workflow.turns[1]
+    assert resumed.resumed is True
+    progress = require_list(resumed.saved_state.get("task_progress") or [])
+    assert len(progress) == 1  # 同幂等键合并
+    merged = require_object(progress[0])
+    assert merged["finished"] is True
+    assert require_list(merged["done_keys"]) == ["search:a"]
+    assert require_list(merged["evidence_refs"]) == ["doc:RULE-1#c001"]
+
+
+async def test_resume_reserves_merchant_concurrency_symmetrically(tmp_path: Path) -> None:
+    """并发对称（审查 B1）：恢复运行中商户并发名额已预留；结束按对称释放不净减。"""
+    workflow = ResumeProbeWorkflow([])
+    settings = Settings(
+        tmp_path,
+        tmp_path / "dataset",
+        failure_retry_attempts=0,
+        quota_merchant_concurrency=1,
+    )
+    runtime = SessionManager(EventStore(tmp_path / "sessions.sqlite"), workflow, settings)
+    sid = (await runtime.create_session(MERCHANT))["id"]
+    await runtime.submit_message(sid, "one", "question", MERCHANT)
+    await runtime.tasks[sid]
+    assert (await runtime.get_session(sid, MERCHANT))["status"] == "failed"
+    workflow.gate = asyncio.Event()
+    await runtime.resume_run(sid, "resume", MERCHANT)
+    other = (await runtime.create_session(MERCHANT))["id"]
+    with pytest.raises(QuotaExceeded) as exc:
+        await runtime.submit_message(other, "two", "another", MERCHANT)
+    assert "正在运行" in str(exc.value)  # 恢复轮占着并发名额
+    workflow.gate.set()
+    await runtime.tasks[sid]
+    assert (await runtime.get_session(sid, MERCHANT))["status"] == "completed"
+    await runtime.submit_message(other, "three", "third", MERCHANT)  # 名额已释放
+    await runtime.tasks[other]
+    assert (await runtime.get_session(other, MERCHANT))["status"] == "completed"
