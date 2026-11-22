@@ -37,6 +37,11 @@ from scripts.benchmark import conversation
 # 正文判定，不按事件的 has_reports 推断。
 SUMMARY_MARKERS = ("已查到的结论", "尚未查到结论")
 
+# 未证实口径（specs/009 FR-7/SC-5）：作答里查不到的子项以此统一表述；与
+# citation_check.UNVERIFIED_MARK 是同一词面，这里按字符串判定避免引入后端
+# workflows 层依赖（scripts 只通过事件与正文投影，不 import 业务实现）。
+UNVERIFIED_MARK = "未能核实"
+
 # 统计需要的事件类型；旧臂没有 clarification.decided 也能容忍。
 SESSION_TYPES = (
     "session.created",
@@ -74,6 +79,15 @@ def has_summary(text: str) -> bool:
     return any(marker in text for marker in SUMMARY_MARKERS)
 
 
+def unverified_rounds(texts: Sequence[str]) -> int:
+    """正文中含统一未证实口径的轮数（specs/009 SC-5 数据源）。
+
+    只做词面判定：出现"未能核实"即计一轮，不区分等待轮与作答轮——
+    口径约束的是"查不到的子项以统一口径出现"，出现位置由后续逐题对照回查。
+    """
+    return sum(1 for text in texts if UNVERIFIED_MARK in text)
+
+
 @dataclass
 class SessionLog:
     """一个会话里与澄清相关的事件投影。"""
@@ -90,6 +104,8 @@ class SessionLog:
     statuses: dict[str, str] = field(default_factory=dict)
     # run_id -> 等待轮的用户可见正文
     waiting_texts: dict[str, str] = field(default_factory=dict)
+    # 本会话全部助手正文（按轮去重）：未证实口径统计的数据源（SC-5）。
+    assistant_texts: list[str] = field(default_factory=list)
     # 最终检查点 clarification.answers 的主题（已回答项）
     answers: list[str] = field(default_factory=list)
     # 跨轮 answers 并集：后期被误清的主题仍算收集过（计量口径，不改状态语义）
@@ -182,10 +198,10 @@ def read_session_logs(arm: Path) -> list[SessionLog]:
             if not log.first_message:
                 log.first_message = require_text(payload.get("content"))
         elif kind == "message.assistant":
+            content = require_text(payload.get("content"))
             if run_id:
-                last_assistant[(session_id, run_id)] = require_text(
-                    payload.get("content")
-                )
+                last_assistant[(session_id, run_id)] = content
+            log.assistant_texts.append(content)
         elif kind == "tool.started" and payload.get("name") == "ask_user":
             arguments = arguments_of(payload)
             fields = string_items(arguments.get("missing")) + string_items(
@@ -234,6 +250,8 @@ class QuestionStats:
     waiting_rounds: int
     waiting_summaries: int
     waiting_final: bool
+    # 含统一未证实口径的轮数（specs/009 SC-5 数据源）；含全部轮次正文。
+    unverified_rounds: int = 0
 
     @property
     def missing(self) -> list[str]:
@@ -308,6 +326,7 @@ def stats_of(question_id: str, case: JsonObject, log: SessionLog) -> QuestionSta
         ),
         waiting_final=log.final_waiting
         and talk.get("mode") == "progressive_disclosure",
+        unverified_rounds=unverified_rounds(log.assistant_texts),
     )
 
 
@@ -380,6 +399,13 @@ def render(results: Sequence[tuple[str, list[QuestionStats], int]]) -> str:
                 f"不带结论 {waiting - summaries}"
             ),
             f"- 单轮等待轮数 {single_waiting}（不计入覆盖分母）",
+            "",
+        ]
+        # 未证实口径（specs/009 SC-5）：含"未能核实"的轮数与题数，供验收对照。
+        unverified = sum(entry.unverified_rounds for entry in stats)
+        unverified_questions = [entry for entry in stats if entry.unverified_rounds]
+        lines += [
+            f"- 未证实口径：{unverified} 轮（{len(unverified_questions)} 题）",
             "",
         ]
         categories = sorted({c for entry in asked for c in entry.required})

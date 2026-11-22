@@ -198,7 +198,7 @@ def test_forbidden_conclusions_use_substring_matching() -> None:
     assert not violated("FP-4041 同时表示不存在与不可见，不能据此判断拼写。", forbidden)
 
 
-def row(identifier: str, *, multi: bool, passed: bool) -> Row:
+def row(identifier: str, *, multi: bool, passed: bool, unverified: int = 0) -> Row:
     """构造一条最小结果行；总览只读 multi_turn、task_pass 与 evidence_pass。"""
     return {
         "question_id": identifier,
@@ -217,6 +217,7 @@ def row(identifier: str, *, multi: bool, passed: bool) -> Row:
         "seconds": 0.0,
         "deviations": [],
         "signals": [],
+        "unverified": unverified,
     }
 
 
@@ -235,6 +236,18 @@ def test_overview_separates_single_turn_from_multi_turn() -> None:
     ]
     table = "\n".join(overview({"manual-loop": rows}))
     assert "| manual-loop | 1/2 | 2/2 | 3/4 | 0/4 |" in table
+
+
+def test_render_reports_unverified_counts() -> None:
+    """报表列出未证实口径的出现次数与题清单（specs/009 SC-5 数据源）。
+
+    既有指标口径不变：未证实统计是追加行，只在有命中时出现。
+    """
+    rows = [row("a", multi=False, passed=True, unverified=2), row("b", multi=True, passed=False)]
+    table = "\n".join(run_module.render(rows, "multi-agent"))
+    assert "未证实口径：2 处（1 题：a）" in table
+    no_hit = "\n".join(run_module.render([row("c", multi=False, passed=True)], "multi-agent"))
+    assert "未证实口径" not in no_hit
 
 
 # --- play 的信号记录（FR-10）：单轮等待与多轮最终轮都不能漏进 signals ---

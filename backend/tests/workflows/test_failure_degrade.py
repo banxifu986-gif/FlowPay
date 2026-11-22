@@ -662,3 +662,57 @@ async def test_resume_continues_from_breakpoint_without_requery(tmp_path: Path) 
     finally:
         await manager.shutdown()
         resources.close()
+
+
+# --- specs/009 US3 T017：resolve_response 输出前的引用校验接入 ---
+
+
+def test_resolve_response_downgrades_bare_assertion_in_model_answer() -> None:
+    """FR-6：模型作答里的无标记断言句在输出前被确定性降级为未证实口径。"""
+    shared = SharedTurn()
+    answer = completion(calls=[_answer_call("该笔支付的结果是退款完成。")])
+    resolved = resolve_response(shared, [], answer)
+    assert resolved.waiting is False
+    assert resolved.text == "未能核实：该笔支付的结果是退款完成。"
+
+
+def test_resolve_response_keeps_cited_answer_untouched() -> None:
+    """带引用标记的结论句原样输出（编号真伪归既有编造核对机制）。"""
+    shared = SharedTurn()
+    text = "该笔支付已退款，见 pay_bg_001_0003。"
+    resolved = resolve_response(shared, [], completion(calls=[_answer_call(text)]))
+    assert resolved.text == text
+
+
+def test_resolve_response_leaves_clarify_body_alone() -> None:
+    """clarify 轮正文是系统确定性拼接（pending 优先拍板），不经引用校验改写。"""
+    shared = SharedTurn()
+    shared.pending.append(ClarificationRequest(conditions=("account_id",), question="请提供账户"))
+    resolved = resolve_response(shared, [], completion(None))
+    assert resolved.waiting is True
+    assert resolved.text.startswith("目前尚未查到结论")
+
+
+async def test_synthesize_answer_passes_citation_check(tmp_path: Path) -> None:
+    """集成：synthesize 输出经引用校验，裸奔断言被降级后成为最终作答。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])]),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion(calls=[response_call("answer", answer="该笔支付的结果是退款完成。")]),
+    ]
+    manager, resources = make_manager(tmp_path, model, Search())
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        answer = require_text(view["messages"][-1]["content"])
+        assert answer == "未能核实：该笔支付的结果是退款完成。"
+        decided = [e for e in manager.store.read(sid) if e["type"] == "clarification.decided"]
+        assert require_object(decided[-1]["payload"])["mode"] == "answer"
+    finally:
+        await manager.shutdown()
+        resources.close()

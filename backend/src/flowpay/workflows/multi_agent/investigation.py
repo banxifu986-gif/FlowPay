@@ -9,7 +9,7 @@ plan 产出的任务经 Send API 并行分发；两个调查员共享 SharedTurn
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Literal, cast
 
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCompletionToolParam
@@ -54,6 +54,7 @@ from flowpay.workflows.manual_loop import (
     ToolAction,
 )
 
+from .citation_check import check_citations
 from .clarification import (
     CLARIFICATION_TOPICS,
     TOPIC_VALUE_CAP,
@@ -496,7 +497,25 @@ def resolve_response(
 
     模型给出合法决策时按决策（clarify 正文仍由系统拼摘要）；没有决策或决策非法
     时确定性回退：有 pending 就用“结论 + 缺项”追问，否则用模型正文作答。
+    作答正文输出前经引用校验（specs/009 FR-6）：无标记断言句确定性降级为未证实
+    口径，纯本地解析零模型调用（降级优先，不触发定向重写）；clarify 正文是系统
+    确定性拼接且伴随 pending（FR-7 拍板未证实口径仅约束无 pending 场景），不改写。
     """
+    resolved = _resolve_decision(shared, reports, completion, bound)
+    if not resolved.waiting:
+        audit = check_citations(resolved.text)
+        if audit.downgraded:
+            return replace(resolved, text=audit.text)
+    return resolved
+
+
+def _resolve_decision(
+    shared: SharedTurn,
+    reports: list[WorkerReport],
+    completion: ChatCompletion,
+    bound: Mapping[str, str] | None = None,
+) -> ResolvedResponse:
+    """既有决策落地逻辑（T007 后原样）：决策分支与确定性回退。"""
     decision = read_response(completion)
     has_reports = bool(reports)
     if decision is None:

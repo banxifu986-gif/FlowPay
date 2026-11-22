@@ -46,6 +46,10 @@ from scripts.auth import INTERNAL
 from scripts.benchmark import conversation, evidence
 from scripts.benchmark.simulated import SimulatedUser, keyword_hits
 
+# 未证实口径词面（specs/009 FR-7/SC-5）：与 citation_check.UNVERIFIED_MARK 一致；
+# scripts 不 import 后端 workflows 层，按字符串判定避免引依赖。
+UNVERIFIED_MARK = "未能核实"
+
 TYPES = (
     "simple_retrieval",
     "multi_document",
@@ -77,6 +81,9 @@ class Row(TypedDict):
     seconds: float
     deviations: list[str]
     signals: list[str]
+    # 未证实口径（specs/009 SC-5）：最终作答中"未能核实"的出现次数。
+    # 词面与 citation_check.UNVERIFIED_MARK 一致；不在报表既有指标口径内。
+    unverified: int
 
 
 class Arguments(argparse.Namespace):
@@ -300,6 +307,7 @@ def score(
         "seconds": 0.0,
         "deviations": [],
         "signals": [],
+        "unverified": answer.count(UNVERIFIED_MARK),
     }
 
 
@@ -326,6 +334,12 @@ def render(rows: list[Row], stage: str) -> list[str]:
         )
     counts = Counter(name for row in rows for name in row["deviations"])
     signals = Counter(name for row in rows for name in row["signals"])
+    # 未证实口径统计（specs/009 SC-5 数据源）：出现"未能核实"的题数与总次数。
+    unverified_rows = [row for row in rows if row["unverified"]]
+    if unverified_rows:
+        total = sum(row["unverified"] for row in unverified_rows)
+        names = "、".join(row["question_id"] for row in unverified_rows)
+        lines += ["", f"未证实口径：{total} 处（{len(unverified_rows)} 题：{names}）"]
     if signals:
         lines += ["", "澄清信号：" + "、".join(f"{k} {v}" for k, v in signals.items())]
     if counts:

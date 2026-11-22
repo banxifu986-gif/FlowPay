@@ -410,3 +410,24 @@ def test_render_reports_coverage_repeats_and_waitings(tmp_path: Path) -> None:
     assert "多轮最终轮 1" in report
     assert "单轮等待轮数 0" in report
     assert "| goal | 1 | 0 | 1 |" in report
+
+
+def test_render_reports_unverified_rounds(tmp_path: Path) -> None:
+    """报告列出含统一未证实口径的轮数与题数（specs/009 SC-5 数据源）。"""
+    builder = ArmBuilder(tmp_path)
+    open_session(builder, "s1")
+    ask_run(builder, "s1", "run_0", missing=["account_id"])
+    # 助手正文一处含"未能核实"。
+    builder.add(
+        "s1",
+        "message.assistant",
+        {"content": f"{clarification.UNVERIFIED_MARK}：手续费金额。"},
+        "run_1",
+    )
+    builder.close()
+    stats, skipped = clarification.analyze(
+        [question()], clarification.read_session_logs(tmp_path / "arm")
+    )
+    assert stats[0].unverified_rounds == 1
+    report = clarification.render([("C", stats, skipped)])
+    assert "未证实口径：1 轮（1 题）" in report
