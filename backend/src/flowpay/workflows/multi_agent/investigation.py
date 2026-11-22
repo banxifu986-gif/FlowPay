@@ -8,7 +8,7 @@ plan 产出的任务经 Send API 并行分发；两个调查员共享 SharedTurn
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import ClassVar, Literal, cast
 
@@ -16,12 +16,14 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from flowpay.core.agent import AgentTurn
+from flowpay.core.agent.trace import Tracer
 from flowpay.core.agent.turn import DISPUTE
 from flowpay.core.chat.projection import ContextPolicy, clip_text
 from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import log_tool, sql_tool
 from flowpay.core.execution.contracts import TurnInput
+from flowpay.core.execution.failures import classify_failure
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.json import JsonObject, parse_json, require_list, require_object, require_text
 from flowpay.core.knowledge.contracts import Passage
@@ -604,6 +606,43 @@ def error_report(
     return WorkerReport(worker, clip_text(text, budget) if budget > 0 else text)
 
 
+def check_chain(shared: SharedTurn, chain: str) -> None:
+    """已禁用链路立即抛失败终止任务（FR-2 禁用即收束，不再发起请求）。
+
+    在 claim 之前调用：禁用链路的调用不消耗去重键与工具预算，任务由既有
+    investigate() catch-all 按 error_report 收束。
+    """
+    if chain in shared.tool_outages:
+        raise RuntimeError(f"工具链路 {chain} 已在本轮禁用，不再发起请求。")
+
+
+async def guarded_call[ChainResult](
+    shared: SharedTurn, tracer: Tracer, chain: str, call: Callable[[], Awaitable[ChainResult]]
+) -> ChainResult:
+    """执行一次链路调用；确定性失败登记禁用并发 tool.outage 后重抛（FR-1/FR-2）。
+
+    白名单（FR-1）命中才登记：登记放在重抛之前，随后由既有 catch-all 走
+    error_report 收束触发登记的任务。同一链路只登记一次——后续失败在
+    check_chain 处即被拦截，不再发起请求。瞬时失败不登记，维持既有语义。
+    """
+    try:
+        return await call()
+    except Exception as error:
+        info = classify_failure(error)
+        if info.deterministic and chain not in shared.tool_outages:
+            shared.tool_outages.add(chain)
+            await tracer.emit(
+                "tool.outage",
+                {
+                    "chain": chain,
+                    "failure_class": "deterministic",
+                    "category": info.category,
+                    "message": info.message,
+                },
+            )
+        raise
+
+
 def budget_report(
     shared: SharedTurn, worker: Literal["sql", "docs"], baseline: int, budget: int
 ) -> WorkerReport:
@@ -732,11 +771,17 @@ def sql_worker_node(
         agent.messages.add_user_message(f"调查任务：{state['tasks'][0].objective}")
 
         async def run_sql(source: str, scope: JsonObject, filters: JsonObject) -> SourceResult:
-            """业务关系查询；去重与记账走共享 claim。"""
+            """业务关系查询；去重与记账走共享 claim，链路守卫见 check_chain/guarded_call。"""
+            check_chain(shared, f"sql:{source}")
             target = " ".join(f"{k}={v}" for k, v in sorted({**scope, **filters}.items()))
             if refused := claim(shared, source, target):
                 raise ToolInputError(refused)
-            result = await runtime.query_sql(source, scope, filters)
+            result = await guarded_call(
+                shared,
+                runtime.tracer,
+                f"sql:{source}",
+                lambda: runtime.query_sql(source, scope, filters),
+            )
             rows = require_list(result["rows"])
             shared.actions.append(ToolAction(source, target, len(rows)))
             shared.findings.append(Finding(source, target, len(rows), row_digest(rows)))
@@ -750,11 +795,17 @@ def sql_worker_node(
             end: str | None = None,
         ) -> SourceResult:
             """日志查询走同一套共享预算与去重；时间窗口也计入条件。"""
+            check_chain(shared, "logs")
             conditions = {**(filters or {}), "start": start or "", "end": end or ""}
             target = " ".join(f"{k}={v}" for k, v in sorted(conditions.items()) if v)
             if refused := claim(shared, source, target):
                 raise ToolInputError(refused)
-            result = await runtime.query_logs(source, filters=filters, start=start, end=end)
+            result = await guarded_call(
+                shared,
+                runtime.tracer,
+                "logs",
+                lambda: runtime.query_logs(source, filters=filters, start=start, end=end),
+            )
             rows = require_list(result["rows"])
             shared.actions.append(ToolAction(source, target, len(rows)))
             shared.findings.append(Finding(source, target, len(rows), row_digest(rows)))
@@ -826,10 +877,19 @@ def doc_worker_node(
             query = " ".join(arguments.query.split())
             # 查询改写（specs/007 US5）：追问得到的现象/目标/时间/版本进入检索文本。
             rewritten = query_with_facts(shared.clarification, query)
+            # 检索链路 = 嵌入服务（R96B 失效形态）：禁用即收束，登记在 guarded_call。
+            check_chain(shared, "embedding")
             if refused := claim(shared, "search", rewritten):
                 return DocumentSearchResult(query, [], refused)
             hits = shared.retrieved.add(
-                await runtime.search_knowledge(prepare_query(rewritten), limit=arguments.limit)
+                await guarded_call(
+                    shared,
+                    runtime.tracer,
+                    "embedding",
+                    lambda: runtime.search_knowledge(
+                        prepare_query(rewritten), limit=arguments.limit
+                    ),
+                )
             )
             shared.actions.append(ToolAction("search_documents", query, len(hits)))
             shared.findings.append(
@@ -840,9 +900,14 @@ def doc_worker_node(
         async def read_document(arguments: DocumentReadArguments) -> DocumentReadResult:
             """整篇读回一份文档。"""
             doc_id = arguments.doc_id
+            check_chain(shared, "read")
             if refused := claim(shared, "read", doc_id):
                 return DocumentReadResult(doc_id, [], refused)
-            passages = shared.retrieved.add(await runtime.read_document(doc_id))
+            passages = shared.retrieved.add(
+                await guarded_call(
+                    shared, runtime.tracer, "read", lambda: runtime.read_document(doc_id)
+                )
+            )
             shared.actions.append(ToolAction("read_document", doc_id, len(passages)))
             shared.findings.append(
                 Finding("read_document", doc_id, len(passages), passage_digest(passages))

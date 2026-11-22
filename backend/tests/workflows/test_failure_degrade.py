@@ -6,12 +6,26 @@
 （审查 C1 可证伪形态）。
 """
 
-from flowpay.core.json import JsonObject, to_json_object
+import json
+from pathlib import Path
+
+from flowpay.core.json import JsonObject, require_object, require_text, to_json_object
+from flowpay.core.llm.chat.http_error import ModelHTTPError
+from flowpay.workflows.multi_agent.investigation import check_chain, guarded_call
 from flowpay.workflows.multi_agent.state import (
     SharedTurn,
     SubtaskProgress,
     merge_task_progress,
     task_key,
+)
+from tests.core.principals import INTERNAL
+
+from .fixtures import Model, Search, completion, intent_call, search_call, tasks_call
+from .test_multi_agent import make_manager
+
+# R96B FP-BM-TV-0116 的真实嵌入 400 正文（SiliconFlow code=20015）：白名单锚点。
+EMBEDDING_400 = ModelHTTPError(
+    400, '{"code":20015,"message":"The parameter is invalid. Please check again."}'
 )
 
 
@@ -86,3 +100,162 @@ def test_merge_task_progress_separate_keys_and_repeat_finished() -> None:
     merged = merge_task_progress([first, second, sql])
     assert set(merged) == {doc_key, sql_key}
     assert merged[doc_key].done_keys == ["search:a", "read:B"]
+
+
+class RecordingTracer:
+    """记录事件的追踪替身：守卫单元测试不落库，只看事件序列。"""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, JsonObject]] = []
+
+    async def emit(self, kind: str, payload: JsonObject, *_args: object) -> None:
+        self.events.append((kind, payload))
+
+
+def outage_payloads(events: list[tuple[str, JsonObject]]) -> list[JsonObject]:
+    """提取 tool.outage 载荷；供"登记一次、后续不再重复登记"断言。"""
+    return [payload for kind, payload in events if kind == "tool.outage"]
+
+
+def test_check_chain_raises_only_when_disabled() -> None:
+    """FR-2 禁用即收束：已禁用链路立即抛失败，未禁用链路放行。"""
+    shared = SharedTurn()
+    shared.tool_outages.add("embedding")
+    try:
+        check_chain(shared, "embedding")
+        raise AssertionError("已禁用链路必须立即抛失败")
+    except RuntimeError as error:
+        assert "embedding" in str(error)
+    check_chain(shared, "sql:payments")  # 未禁用链路不抛
+
+
+async def test_guarded_call_registers_deterministic_failure_once() -> None:
+    """确定性失败 → 登记禁用 + 发 tool.outage（failure_class=deterministic）→ 重抛原错误。"""
+    shared = SharedTurn()
+    tracer = RecordingTracer()
+
+    async def broken() -> None:
+        raise EMBEDDING_400
+
+    try:
+        await guarded_call(shared, tracer, "embedding", broken)
+        raise AssertionError("确定性失败必须重抛")
+    except ModelHTTPError as error:
+        assert error is EMBEDDING_400  # 重抛原错误，交由既有 catch-all 收束
+    assert shared.tool_outages == {"embedding"}
+    payloads = outage_payloads(tracer.events)
+    assert len(payloads) == 1
+    assert require_text(payloads[0]["chain"]) == "embedding"
+    assert require_text(payloads[0]["failure_class"]) == "deterministic"
+
+    # 已登记后再次失败：任务照常失败，但禁用登记与事件不重复。
+    async def broken_again() -> None:
+        raise EMBEDDING_400
+
+    try:
+        await guarded_call(shared, tracer, "embedding", broken_again)
+    except ModelHTTPError:
+        pass
+    assert len(outage_payloads(tracer.events)) == 1
+
+
+async def test_guarded_call_passes_transient_failures_through() -> None:
+    """瞬时失败（RuntimeError → other）不登记禁用、不发事件，仍重抛走既有收束。"""
+    shared = SharedTurn()
+    tracer = RecordingTracer()
+
+    async def flaky() -> None:
+        raise RuntimeError("search offline")
+
+    try:
+        await guarded_call(shared, tracer, "embedding", flaky)
+        raise AssertionError("失败必须重抛")
+    except RuntimeError:
+        pass
+    assert shared.tool_outages == set()
+    assert outage_payloads(tracer.events) == []
+
+
+async def test_guarded_call_returns_result_when_chain_healthy() -> None:
+    """链路正常时守卫透传结果，不产生任何事件。"""
+    shared = SharedTurn()
+    tracer = RecordingTracer()
+
+    async def healthy() -> str:
+        return "ok"
+
+    assert await guarded_call(shared, tracer, "embedding", healthy) == "ok"
+    assert shared.tool_outages == set()
+    assert tracer.events == []
+
+
+class DeterministicSearch(Search):
+    """嵌入链路注入结构性 400：请求已发起（knowledge.request 在案）后确定性拒绝。
+
+    形态取自 R96B FP-BM-TV-0116：SiliconFlow 对查询文本返回 code=20015 结构性 400。
+    """
+
+    async def search(
+        self,
+        collection_id: str,
+        text: str,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+    ) -> list[object]:
+        assert collection_id == "fixture" and self.tracer is not None
+        await self.tracer.emit("knowledge.request", {"query": text, "limit": limit})
+        self.queries.append((text, limit))
+        raise EMBEDDING_400
+
+
+async def test_deterministic_outage_disables_chain_for_rest_of_turn(tmp_path: Path) -> None:
+    """集成可证伪形态（SC-2）：注入嵌入 400 → tool.outage 登记 → 后续调用不再发起请求。
+
+    断言新行为而非既有 error_report 兜底：tool.outage 载荷
+    failure_class=deterministic、knowledge.request 只发起一次（第二个任务对
+    已禁用链路零请求）、无 run.retry、整轮正常完成。
+    """
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(
+            calls=[
+                tasks_call(
+                    "t1",
+                    [
+                        {"kind": "docs", "objective": "查明重试策略"},
+                        {"kind": "docs", "objective": "查明退避规则"},
+                    ],
+                )
+            ]
+        ),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion(calls=[search_call("s2", "退避规则")]),
+        completion("已根据调查报告回答。\n\n[doc:RULE-1#c001]"),
+    ]
+    search = DeterministicSearch()
+    manager, resources = make_manager(tmp_path, model, search, max_concurrency=1)
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        events = manager.store.read(sid)
+        # ① tool.outage 恰一次，载荷 failure_class=deterministic + 链路标识。
+        outages = [e for e in events if e["type"] == "tool.outage"]
+        assert len(outages) == 1
+        payload = require_object(outages[0]["payload"])
+        assert require_text(payload["failure_class"]) == "deterministic"
+        assert require_text(payload["chain"]) == "embedding"
+        # ② 后续调用不再发起请求：knowledge.request 只发起一次。
+        assert len([e for e in events if e["type"] == "knowledge.request"]) == 1
+        # ③ 无 run.retry：确定性失败不烧重试预算。
+        assert not [e for e in events if e["type"] == "run.retry"]
+        # ④ 两个任务都按 error_report 收束（目标与失败说明进入汇总请求）。
+        assert require_text(view["status"]) == "completed"
+        content = json.dumps(model.requests[-1]["messages"], ensure_ascii=False)
+        assert "查明重试策略" in content and "查明退避规则" in content
+        assert "RuntimeError" in content  # 第二个任务的禁用即收束说明
+    finally:
+        await manager.shutdown()
+        resources.close()
