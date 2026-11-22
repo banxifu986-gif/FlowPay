@@ -153,4 +153,5 @@
 - Q: synthesize 空输出怎么处置？ → A: 进 scope（新 FR-12）——确定性重试一次，仍空则诚实占位完成（不 run.failed）；SC-2 的 run.failed=0 因此可达。
 - Q: 链路禁用后该 worker 任务怎么收束？ → A: 禁用即收束——触发登记的任务按既有 error_report 路径收束（携带发现），本轮后续对已禁用链路的调用立即失败终止任务；不做"以其余工具继续"的 catch-all 拆分（B2 手术不再需要）。
 - Q: 工具失效与 pending 追问并存时谁优先？ → A: clarify 优先（既有回退不动），FR-7 未证实口径仅约束无 pending 场景。
-- Q: 副 worktree 的 Python 环境方案？ → A: 各自 `uv sync`，废弃 VENV 共享（本机 `backend/.venv` 为 Windows Scripts 布局，Makefile/check_quality.py 的 POSIX 硬编码 `bin/python` 与门禁历史口径的矛盾另待实测确认）。
+- Q: 副 worktree 的 Python 环境方案？ → A: 各自 `uv sync`，废弃 VENV 共享（本机 `backend/.venv` 为 Windows Scripts 布局，Makefile/check_quality.py 的 POSIX 硬编码 `bin/python` 与门禁历史口径的矛盾另待实测确认）。**实测已闭合（2026-11-23）**：宿主 pytest 可收集 420/432，12 个收集错误全为 `fcntl` 缺失（容器-only 模块，含 test_auth 等 7 文件）；运行形态三层——副轨宿主子集快跑、脊柱批次门禁容器全量、SC-8 终门禁容器全量。
+- Q: worker 预算上限默认值定多少？ → A: **16**（Ban 拍板 2026-11-23）——R96B 实测单任务调用 p50=11 / p95=15.5 / max=23（`scripts/stats_tool_calls.py`），原默认 10 低于中位数会拦腰正常任务；16 取 p75~p95 区间，不误伤正常调查、仍能拦跑飞。
