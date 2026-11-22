@@ -29,6 +29,7 @@ from .fixtures import (
     Search,
     completion,
     conversation,
+    empty_sources,
     grounded,
     intent_call,
     search_call,
@@ -825,3 +826,156 @@ def test_merge_old_findings_noop_under_cap() -> None:
     ]
     merged = merge_old_findings(findings, cap=20)
     assert merged == findings and merged is not findings
+
+
+# ---- specs/009 US4（T021）：plan 校验三路径（改派/重计划/丢弃）----
+
+
+def reassigned_events(store: EventStore, sid: str) -> list[JsonObject]:
+    """读取会话事件里的 task.reassigned 载荷列表。"""
+    return [
+        require_object(event["payload"])
+        for event in store.read(sid)
+        if event["type"] == "task.reassigned"
+    ]
+
+
+def dropped_events(store: EventStore, sid: str) -> list[JsonObject]:
+    """读取会话事件里的 task.dropped 载荷列表。"""
+    return [
+        require_object(event["payload"])
+        for event in store.read(sid)
+        if event["type"] == "task.dropped"
+    ]
+
+
+async def test_plan_reassigns_mismatched_task(tmp_path: Path) -> None:
+    """路径一：目标写明业务记录但 kind=docs——改派后任务正常完成（FR-8）。
+
+    重计划响应为空任务（模型未按协议重拆）：沿用改派列表兜底，不失败整轮。
+    """
+    model, search = Model(), Search()
+    manager, resources = make_manager(tmp_path, model, search, sources=empty_sources(tmp_path))
+    model.responses = [
+        completion(
+            calls=[
+                tasks_call(
+                    "plan_1", [{"kind": "docs", "objective": "查支付 pay_bg_001_0003 的状态"}]
+                )
+            ]
+        ),
+        conversation("没有需要调查的任务。"),  # 重计划响应：空任务 → 兜底走改派列表
+        conversation("业务记录查询需要数据源，未配置时以报告收束。"),  # sql 调查员回复
+        grounded("已根据调查报告回答。"),
+    ]
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，帮我看看")
+        view = await manager.get_session(sid, INTERNAL)
+        assert require_text(view["status"]) == "completed"
+        events = reassigned_events(manager.store, sid)
+        assert len(events) == 1
+        assert require_text(events[0]["objective"]) == "查支付 pay_bg_001_0003 的状态"
+        assert require_text(events[0]["from"]) == "docs_worker"
+        assert require_text(events[0]["to"]) == "sql_worker"
+        assert dropped_events(manager.store, sid) == []
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_plan_replan_produces_correct_kinds(tmp_path: Path) -> None:
+    """路径二：重计划一次后模型给出正确 kind——采用重计划列表并正常完成。"""
+    model, search = Model(), Search()
+    # max_concurrency=1 串行化 Send：受控响应按任务分发顺序对齐，不靠并发时序。
+    manager, resources = make_manager(
+        tmp_path, model, search, sources=empty_sources(tmp_path), max_concurrency=1
+    )
+    model.responses = [
+        completion(
+            calls=[
+                tasks_call(
+                    "plan_1", [{"kind": "docs", "objective": "查支付 pay_bg_001_0003 的状态"}]
+                )
+            ]
+        ),
+        completion(
+            calls=[
+                tasks_call(
+                    "plan_2",
+                    [
+                        {"kind": "sql", "objective": "查支付 pay_bg_001_0003 的状态"},
+                        {"kind": "docs", "objective": "查平台文档里 Webhook 重试策略的规则"},
+                    ],
+                )
+            ]
+        ),
+        grounded("业务结论。"),
+        completion(calls=[search_call("s1", "Webhook 重试策略")]),
+        grounded("规则结论。"),
+        grounded("已根据调查报告回答。"),
+    ]
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，重试策略是什么")
+        view = await manager.get_session(sid, INTERNAL)
+        assert require_text(view["status"]) == "completed"
+        # 纠错提示确实带上了原指派与正确方向。
+        correction = json.dumps(model.requests[1]["messages"], ensure_ascii=False)
+        assert "docs_worker" in correction and "sql_worker" in correction
+        # 重计划列表被采用：sql 与 docs 两个任务都真的执行（检索命中一次）。
+        assert len(search.queries) == 1
+        assert dropped_events(manager.store, sid) == []
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_plan_drops_unmatched_after_replan(tmp_path: Path) -> None:
+    """路径三：重计划后仍不匹配——丢弃并记 task.dropped，其余任务正常完成。"""
+    model, search = Model(), Search()
+    manager, resources = make_manager(tmp_path, model, search, sources=empty_sources(tmp_path))
+    model.responses = [
+        completion(
+            calls=[
+                tasks_call(
+                    "plan_1",
+                    [
+                        {"kind": "docs", "objective": "查支付 pay_bg_001_0003 的状态"},
+                        {"kind": "docs", "objective": "查平台文档里 Webhook 重试策略的规则"},
+                    ],
+                )
+            ]
+        ),
+        completion(
+            calls=[
+                tasks_call(
+                    "plan_2",
+                    [
+                        {"kind": "docs", "objective": "查支付 pay_bg_001_0003 的状态"},
+                        {"kind": "docs", "objective": "查平台文档里 Webhook 重试策略的规则"},
+                    ],
+                )
+            ]
+        ),
+        completion(calls=[search_call("s1", "Webhook 重试策略")]),
+        grounded("规则结论。"),
+        grounded("已根据调查报告回答。"),
+    ]
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await say(manager, sid, "first", "支付 pay_bg_001_0003 一直没收到通知，重试策略是什么")
+        view = await manager.get_session(sid, INTERNAL)
+        assert require_text(view["status"]) == "completed"
+        # 首轮两个任务都改派（docs→sql 与 docs→docs 维持），重计划仍不匹配的丢弃。
+        events = reassigned_events(manager.store, sid)
+        assert len(events) == 1
+        assert require_text(events[0]["objective"]) == "查支付 pay_bg_001_0003 的状态"
+        dropped = dropped_events(manager.store, sid)
+        assert len(dropped) == 1
+        assert require_text(dropped[0]["objective"]) == "查支付 pay_bg_001_0003 的状态"
+        # 其余任务正常完成：规则任务真的执行了检索。
+        assert len(search.queries) == 1
+    finally:
+        await manager.shutdown()
+        resources.close()

@@ -786,6 +786,60 @@ async def investigate(
         shared.usage_entries.extend(agent.usage_entries)
 
 
+# ---- US4 能力校验（specs/009 FR-8）：分发前核对任务目标与 worker 能力 ----
+
+# CapabilityMap 静态表：worker 与工具的绑定在代码里已是静态事实（sql_worker 拿不到
+# 知识检索、doc_worker 拿不到 SQL），映射表只是把该事实显式化给 plan 校验用
+# （research.md D6）。关键词按域枚举；两类同时命中或不命中都返回 None——不质疑模型。
+CAPABILITY_KIND = Literal["sql", "docs"]
+CAPABILITY_KEYWORDS: dict[CAPABILITY_KIND, tuple[str, ...]] = {
+    "sql": ("支付", "事件", "webhook 投递", "投递", "端点", "api 请求", "退款", "账户余额", "流水"),
+    "docs": ("文档", "规则", "知识库", "平台说明", "重试策略", "使用指南", "条款", "口径"),
+}
+
+
+def expected_kind(objective: str) -> CAPABILITY_KIND | None:
+    """按静态能力表判断任务目标应属的调查员；无法判定时返回 None。
+
+    业务记录编号（pay_bg_001_0003 等）是最强信号，直接判 sql；文本关键词两类
+    同时命中或都不命中时返回 None，维持模型给的 kind——最小约束包不做题型矩阵。
+    """
+    if record_ids(objective):
+        return "sql"
+    lowered = objective.casefold()
+    hits: set[CAPABILITY_KIND] = {
+        kind
+        for kind, words in CAPABILITY_KEYWORDS.items()
+        if any(word in lowered for word in words)
+    }
+    if len(hits) == 1:
+        for kind in hits:
+            return kind
+    return None
+
+
+def validate_tasks(
+    tasks: list[InvestigationTask], final: bool = False
+) -> tuple[list[InvestigationTask], list[InvestigationTask]]:
+    """分发前校验：返回（保留/改派后的任务，丢弃的任务）。
+
+    目标与 kind 不匹配时改派到匹配的 worker；final=True 表示处于重计划复核
+    阶段——不再改派，仍不匹配的任务直接丢弃（FR-8：改派 → 重计划一次 → 丢弃）。
+    改派/丢弃由 plan_node 发对应事件（task.reassigned / task.dropped）。
+    """
+    kept: list[InvestigationTask] = []
+    dropped: list[InvestigationTask] = []
+    for item in tasks:
+        want = expected_kind(item.objective)
+        if want is None or want == item.kind:
+            kept.append(item)
+        elif not final:
+            kept.append(InvestigationTask(want, item.objective))
+        else:
+            dropped.append(item)
+    return kept, dropped
+
+
 def plan_node(
     model: ChatModel,
     runtime: AgentRuntime,
@@ -824,10 +878,73 @@ def plan_node(
             shared.clarification.answer(answer.topic, answer.value)
         shared.clarification.mark_unavailable(update.unavailable)
         # 任务数决定调查员的工具额度：每个子任务约 3 次查询（R3）。
+        tasks = await enforce_capabilities(model, runtime, shared, messages, tasks)
         shared.budget.extend(shared.budget.model_calls, shared.budget.tool_calls + 3 * len(tasks))
         return {"tasks": tasks}
 
     return node
+
+
+CAPABILITY_CORRECTION = """分发校验发现以下任务目标与指派的调查员不匹配：
+{items}
+请按能力边界重新拆解：要查业务记录（支付、事件、Webhook 投递、端点、API 请求）的部分
+kind=sql，要查平台文档/规则的部分 kind=docs；目标本身写得不清楚的部分写明目标原文。
+重新调用 set_tasks 报告全部子任务。"""
+
+
+async def enforce_capabilities(
+    model: ChatModel,
+    runtime: AgentRuntime,
+    shared: SharedTurn,
+    messages: list[ChatCompletionMessageParam],
+    tasks: list[InvestigationTask],
+) -> list[InvestigationTask]:
+    """US4 分发前校验（FR-8）：改派 → 重计划一次 → 丢弃，三段串行。
+
+    首轮校验发现不匹配任务：确定性改派并发 task.reassigned；存在改派时带纠错
+    提示重计划一次，重计划产出合法非空列表则替换并复核（final 口径）——仍不
+    匹配的丢弃并发 task.dropped；重计划失败或空产出时沿用改派列表兜底，调查
+    不空转、不失败整轮。无改派时原样返回，行为不变。事件经既有 tracer 通道
+    承载（FR-11 下游零改动）。
+    """
+    reassigned, _ = validate_tasks(tasks)
+    # 改派记录：zip 对齐原任务与校验后任务，kind 变了的就是被改派的（顺序保持）。
+    reassigned_pairs = [
+        (item.kind, kept.kind, kept.objective)
+        for kept, item in zip(reassigned, tasks, strict=True)
+        if kept.kind != item.kind
+    ]
+    if not reassigned_pairs:
+        return tasks
+    for origin, new_kind, objective in reassigned_pairs:
+        await runtime.tracer.emit(
+            "task.reassigned",
+            {"objective": objective, "from": f"{origin}_worker", "to": f"{new_kind}_worker"},
+        )
+    # 重计划一次：纠错提示追加在首轮请求之后，模型按能力边界重新拆解全部子任务。
+    correction = CAPABILITY_CORRECTION.format(
+        items="\n".join(
+            f"- 「{objective}」原指派 {origin}_worker，应为 {new_kind}_worker"
+            for origin, new_kind, objective in reassigned_pairs
+        )
+    )
+    retry_messages: list[ChatCompletionMessageParam] = [
+        *messages,
+        {"role": "system", "content": correction},
+    ]
+    completion, _ = await runtime.chat(model).call(retry_messages, [SET_TASKS], output="internal")
+    shared.record_usage(completion)
+    retry_tasks, _ = read_plan(completion)
+    if not retry_tasks:
+        # 重计划没有产出（模型没调用 set_tasks 或全为空）：沿用改派列表兜底。
+        return reassigned
+    final_tasks, final_dropped = validate_tasks(retry_tasks, final=True)
+    for item in final_dropped:
+        await runtime.tracer.emit(
+            "task.dropped",
+            {"objective": item.objective, "reason": "重计划后任务目标仍与调查员能力不匹配"},
+        )
+    return final_tasks
 
 
 def sql_worker_node(

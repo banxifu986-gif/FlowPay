@@ -150,7 +150,7 @@ async def test_usage_is_per_turn_independent(tmp_path: Path) -> None:
         completion(calls=[intent_call("i1", "docs")], usage=USAGE),
         completion("按文档回答。", usage=USAGE),
         completion(
-            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明该支付的状态"}])],
+            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明该记录的状态"}])],
             usage=USAGE,
         ),
         completion(calls=[search_call("s1", "支付状态")], usage=USAGE),
@@ -242,7 +242,7 @@ async def test_light_nodes_untouched_without_policy(tmp_path: Path) -> None:
     model.responses = [
         completion(calls=[intent_call("i1", "troubleshoot")], usage=USAGE),
         completion(
-            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明该支付的状态"}])],
+            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明该记录的状态"}])],
             usage=USAGE,
         ),
         completion(calls=[search_call("s1", "支付状态")], usage=USAGE),
@@ -287,7 +287,7 @@ async def test_plan_and_synthesize_clipped_with_policy(tmp_path: Path) -> None:
     model.responses = [
         completion(calls=[intent_call("i1", "troubleshoot")], usage=USAGE),
         completion(
-            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明该支付的状态"}])],
+            calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明该记录的状态"}])],
             usage=USAGE,
         ),
         completion(calls=[search_call("s1", "支付状态")], usage=USAGE),
