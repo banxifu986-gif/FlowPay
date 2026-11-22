@@ -16,12 +16,12 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCo
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from flowpay.core.agent import AgentTurn
-from flowpay.core.agent.trace import Tracer
 from flowpay.core.agent.turn import DISPUTE
 from flowpay.core.chat.projection import ContextPolicy, clip_text
 from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import log_tool, sql_tool
+from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.execution.contracts import TurnInput
 from flowpay.core.execution.failures import classify_failure
 from flowpay.core.execution.runtime import AgentRuntime
@@ -649,7 +649,7 @@ def check_chain(shared: SharedTurn, chain: str) -> None:
 
 
 async def guarded_call[ChainResult](
-    shared: SharedTurn, tracer: Tracer, chain: str, call: Callable[[], Awaitable[ChainResult]]
+    shared: SharedTurn, tracer: EventSink, chain: str, call: Callable[[], Awaitable[ChainResult]]
 ) -> ChainResult:
     """执行一次链路调用；确定性失败登记禁用并发 tool.outage 后重抛（FR-1/FR-2）。
 

@@ -8,10 +8,19 @@
 
 import json
 from pathlib import Path
+from typing import override
 
 import pytest
 
-from flowpay.core.json import JsonObject, require_object, require_text, to_json_object
+from flowpay.core.event_log.types import Event
+from flowpay.core.json import (
+    JsonObject,
+    require_list,
+    require_object,
+    require_text,
+    to_json_object,
+)
+from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.llm.chat.http_error import ModelHTTPError
 from flowpay.core.llm.chat.messages import ModelOutputError
 from flowpay.workflows.multi_agent.clarification import ClarificationRequest
@@ -29,11 +38,13 @@ from flowpay.workflows.multi_agent.state import (
 )
 from tests.core.principals import INTERNAL
 
-from .fixtures import Model, Search, completion, intent_call, search_call, tasks_call
+from .fixtures import Model, Search, completion, hit, intent_call, search_call, tasks_call
 from .test_clarification import response_call
 from .test_multi_agent import make_manager
 
 # R96B FP-BM-TV-0116 的真实嵌入 400 正文（SiliconFlow code=20015）：白名单锚点。
+FOUND_PART = "重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]"
+MISSING_PART = "退避规则未能核实：检索链路本轮禁用"
 EMBEDDING_400 = ModelHTTPError(
     400, '{"code":20015,"message":"The parameter is invalid. Please check again."}'
 )
@@ -113,13 +124,32 @@ def test_merge_task_progress_separate_keys_and_repeat_finished() -> None:
 
 
 class RecordingTracer:
-    """记录事件的追踪替身：守卫单元测试不落库，只看事件序列。"""
+    """记录事件的追踪替身：守卫单元测试不落库，只看事件序列（满足 EventSink 协议）。"""
 
     def __init__(self) -> None:
         self.events: list[tuple[str, JsonObject]] = []
 
-    async def emit(self, kind: str, payload: JsonObject, *_args: object) -> None:
+    async def emit(
+        self,
+        kind: str,
+        payload: JsonObject,
+        call_id: str | None = None,
+        parent_call_id: str | None = None,
+    ) -> Event:
+        _ = call_id, parent_call_id
         self.events.append((kind, payload))
+        return {
+            "schema_version": 1,
+            "event_id": "evt_fixture",
+            "session_id": "s1",
+            "seq": 0,
+            "run_id": None,
+            "call_id": None,
+            "parent_call_id": None,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "type": kind,
+            "payload": payload,
+        }
 
 
 def outage_payloads(events: list[tuple[str, JsonObject]]) -> list[JsonObject]:
@@ -205,17 +235,37 @@ class DeterministicSearch(Search):
     形态取自 R96B FP-BM-TV-0116：SiliconFlow 对查询文本返回 code=20015 结构性 400。
     """
 
+    @override
     async def search(
         self,
         collection_id: str,
         text: str,
         limit: int = 5,
         filters: JsonObject | None = None,
-    ) -> list[object]:
+    ) -> list[Passage]:
         assert collection_id == "fixture" and self.tracer is not None
         await self.tracer.emit("knowledge.request", {"query": text, "limit": limit})
         self.queries.append((text, limit))
         raise EMBEDDING_400
+
+
+class FirstQueryOkSearch(DeterministicSearch):
+    """首查正常、后续请求结构性 400：构造部分证据与链路禁用并存的场景。"""
+
+    @override
+    async def search(
+        self,
+        collection_id: str,
+        text: str,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+    ) -> list[Passage]:
+        assert collection_id == "fixture" and self.tracer is not None
+        await self.tracer.emit("knowledge.request", {"query": text, "limit": limit})
+        self.queries.append((text, limit))
+        if len(self.queries) > 1:
+            raise EMBEDDING_400
+        return [hit()]
 
 
 async def test_deterministic_outage_disables_chain_for_rest_of_turn(tmp_path: Path) -> None:
@@ -378,6 +428,51 @@ async def test_synthesize_double_empty_output_finishes_with_placeholder(tmp_path
         decided = [e for e in events if e["type"] == "clarification.decided"]
         assert require_text(require_object(decided[-1]["payload"])["source"]) == "fallback"
         assert require_object(require_object(decided[-1]["payload"]))["mode"] == "answer"
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_partial_evidence_answers_with_unverified_mark(tmp_path: Path) -> None:
+    """部分证据 + 链路禁用（SC-3）：已查子项照常作答，失败子项标注未能核实。
+
+    一个任务查到证据、另一个任务被确定性禁用收束：整轮正常完成、证据面板
+    仍带已查片段、无 run.failed——降级作答契约的三来源之一（禁用收束）。
+    """
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(
+            calls=[
+                tasks_call(
+                    "t1",
+                    [
+                        {"kind": "docs", "objective": "查明重试策略"},
+                        {"kind": "docs", "objective": "查明退避规则"},
+                    ],
+                )
+            ]
+        ),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion(calls=[search_call("s2", "退避规则")]),  # 第二个任务：禁用即收束
+        completion(f"{FOUND_PART}；{MISSING_PART}。"),
+    ]
+    search = FirstQueryOkSearch()
+    manager, resources = make_manager(tmp_path, model, search, max_concurrency=1)
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        events = manager.store.read(sid)
+        assert require_text(view["status"]) == "completed"  # 不产生 run.failed
+        answer = require_object(view["messages"][-1])
+        assert "HTTP 410" in require_text(answer["content"])  # 已查子项照常作答
+        assert "未能核实" in require_text(answer["content"])  # 失败子项统一口径
+        assert require_list(answer.get("evidence") or [])  # 已查证据仍可展开
+        assert len([e for e in events if e["type"] == "tool.outage"]) == 1
+        assert not [e for e in events if e["type"] == "run.retry"]
     finally:
         await manager.shutdown()
         resources.close()
