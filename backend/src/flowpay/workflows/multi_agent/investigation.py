@@ -63,6 +63,7 @@ from .clarification import (
     cast_topic,
     clarify_tool,
     query_with_facts,
+    query_with_findings,
     still_missing,
 )
 from .state import (
@@ -792,8 +793,10 @@ async def investigate(
 # 知识检索、doc_worker 拿不到 SQL），映射表只是把该事实显式化给 plan 校验用
 # （research.md D6）。关键词按域枚举；两类同时命中或不命中都返回 None——不质疑模型。
 CAPABILITY_KIND = Literal["sql", "docs"]
+# sql 词表只放"业务记录实体"词，不放动作/环节词（如"投递"）——后者在文档规则类
+# 目标里同样常见（"投递失败的处理规则"），误改派会切断文档调查。
 CAPABILITY_KEYWORDS: dict[CAPABILITY_KIND, tuple[str, ...]] = {
-    "sql": ("支付", "事件", "webhook 投递", "投递", "端点", "api 请求", "退款", "账户余额", "流水"),
+    "sql": ("支付", "事件", "webhook 投递", "端点", "api 请求", "退款", "账户余额", "流水"),
     "docs": ("文档", "规则", "知识库", "平台说明", "重试策略", "使用指南", "条款", "口径"),
 }
 
@@ -1079,6 +1082,11 @@ def doc_worker_node(
             rewritten = query_with_facts(shared.clarification, query)
             # 检索链路 = 嵌入服务（R96B 失效形态）：禁用即收束，登记在 guarded_call。
             check_chain(shared, "embedding")
+            # 多跳两段式（specs/009 US5）：本轮第一跳查得的记录编号也拼进查询——
+            # findings 的 target/digest 加片段正文，排序去重保证同集合同文本（B4）。
+            rewritten = query_with_findings(
+                shared.findings, rewritten, shared.retrieved.all()
+            )
             if refused := claim(shared, "search", rewritten):
                 return DocumentSearchResult(query, [], refused)
             hits = shared.retrieved.add(

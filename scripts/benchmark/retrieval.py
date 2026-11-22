@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
+from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.config import load_settings
 from flowpay.core.event_log.types import Event
 from flowpay.core.json import (
@@ -814,6 +815,49 @@ async def diagnose(
         stats,
         answers,
     ), (hybrid_config is not None)
+
+
+def second_hop_audit(arm: Path) -> tuple[int, int, list[str]]:
+    """第二跳机制抽查（specs/009 SC-7/T028）：臂数据里第二跳检索是否携带第一跳结论值。
+
+    按会话顺序读事件库：`source.request` 的查询参数（第一跳业务查询）里出现过的
+    记录编号，是否也出现在该会话后续的 `knowledge.request` 查询文本里。返回
+    （带编号的检索查询数，检索查询总数，缺失样例）。第一跳没有产生任何编号的
+    会话不参与计数——单跳任务与无第一跳结论时不拼接，行为不变（FR-10）。
+    """
+    path = arm / "multi-agent" / "sessions.sqlite"
+    if not path.exists():
+        raise ValueError(f"no session store under {arm}")
+    with sqlite3.connect(path) as db:
+        rows = cast(
+            "list[tuple[str, int, str, str]]",
+            db.execute(
+                "SELECT session_id, seq, type, data FROM events"
+                + " WHERE type IN ('source.request','knowledge.request') ORDER BY seq"
+            ).fetchall(),
+        )
+    seen_ids: dict[str, set[str]] = {}
+    queries: dict[str, list[str]] = {}
+    for session_id, _seq, kind, data in rows:
+        payload = require_object(parse_json(require_text(data)))["payload"]
+        payload = require_object(payload)
+        if kind == "source.request":
+            parameters = require_object(payload.get("parameters") or {})
+            values = set(record_ids(" ".join(str(v) for v in parameters.values())))
+            seen_ids.setdefault(session_id, set()).update(values)
+            continue
+        queries.setdefault(session_id, []).append(require_text(payload["query"]))
+    audited = 0
+    misses: list[str] = []
+    for session_id, session_queries in queries.items():
+        identifiers = seen_ids.get(session_id, set())
+        if not identifiers:
+            continue
+        for index, query in enumerate(session_queries):
+            audited += 1
+            if not identifiers & set(record_ids(query)):
+                misses.append(f"{session_id}#{index}:{query[:60]}")
+    return audited - len(misses), audited, misses[:10]
 
 
 class Arguments(argparse.Namespace):

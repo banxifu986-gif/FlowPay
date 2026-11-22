@@ -45,6 +45,7 @@ from .fixtures import (
     empty_sources,
     grounded,
     intent_call,
+    read_call,
     search_call,
     tasks_call,
 )
@@ -1714,6 +1715,119 @@ async def test_doc_search_uses_the_rewritten_query(tmp_path: Path) -> None:
         assert search.queries
         assert any("回调一直 500" in text for text, _ in search.queries)
         assert any("Webhook 重试策略" in text for text, _ in search.queries)
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+# --- specs/009 US5 多跳两段式（T024）：findings 结论值拼进第二跳查询 ---
+
+
+def finding(tool: str, target: str, digest: str) -> "Finding":
+    """构造一条结论摘要；rows 取 0 只为满足签名。"""
+    from flowpay.workflows.multi_agent.state import Finding
+
+    return Finding(tool, target, 0, digest)
+
+
+def test_second_hop_appends_sorted_record_ids() -> None:
+    """第一跳查得的记录编号进第二跳查询：取有序集合并排序（审查 B4）。"""
+    from flowpay.workflows.multi_agent.clarification import query_with_findings
+
+    findings = [
+        finding("sql", "payments id=pay_bg_001_0003", "3 行；首行 id=pay_bg_001_0003"),
+        finding("sql", "events payment_id=pay_bg_001_0003", "2 行；首行 id=evt_bm_002_01"),
+    ]
+    assert query_with_findings(findings, "通知投递状态") == (
+        "通知投递状态 evt_bm_002_01 pay_bg_001_0003"
+    )
+
+
+def test_second_hop_is_deterministic_over_finding_order() -> None:
+    """同一 findings 集合不同顺序产出同一查询文本（恢复续跑不因顺序漂移重查）。"""
+    from flowpay.workflows.multi_agent.clarification import query_with_findings
+
+    base = [
+        finding("sql", "payments id=pay_bm_030_02", "1 行"),
+        finding("sql", "events id=evt_bg_003_01", "1 行"),
+        finding("sql", "webhooks id=req_bm_030_01", "1 行"),
+    ]
+    first = query_with_findings(base, "投递结果")
+    second = query_with_findings(list(reversed(base)), "投递结果")
+    assert first == second
+    # 重复编号只拼一次。
+    dup = [*base, finding("sql", "again pay_bm_030_02", "1 行")]
+    assert query_with_findings(dup, "投递结果") == first
+
+
+def test_second_hop_without_findings_is_noop() -> None:
+    """无第一跳结论时不拼接，行为不变（FR-10）。"""
+    from flowpay.workflows.multi_agent.clarification import query_with_findings
+
+    assert query_with_findings([], "Webhook 重试策略") == "Webhook 重试策略"
+    # findings 里没有编号也一样。
+    assert query_with_findings([finding("search_documents", "重试策略", "0 个片段")], "重试策略") == (
+        "重试策略"
+    )
+
+
+def test_second_hop_value_capped_at_500_chars() -> None:
+    """拼接值整体 ≤500 字符：截断到上限（沿用既有长度口径）。"""
+    from flowpay.workflows.multi_agent.clarification import query_with_findings
+
+    ids = [f"pay_aaaa_{i:04d}_9999" for i in range(100)]
+    findings = [finding("sql", f"payments id={identifier}", "1 行") for identifier in ids]
+    query = query_with_findings(findings, "通知状态")
+    assert len(query) <= 500
+    assert query.startswith("通知状态 ")
+
+
+async def test_doc_search_second_hop_carries_findings(tmp_path: Path) -> None:
+    """集成：第一跳的结论值进入第二轮的文档检索查询。
+
+    第一轮 docs 调查员读回带业务编号的文档（Search.documents 注册 RULE-1
+    之外再注册一份带编号的文档），read_document 的 findings 摘要携带该编号；
+    第二轮 docs 任务检索时该编号拼进查询（specs/009 US5 两段式）。
+    """
+    model, search = Model(), Search()
+    from flowpay.core.knowledge.contracts import Passage, PassageSource
+
+    search.documents["DELIVERY-9"] = [
+        Passage(
+            id="doc:DELIVERY-9#c001",
+            title="投递失败处理",
+            text="支付 pay_bg_001_0003 投递失败时按重试策略处理。",
+            score=0.9,
+            source=PassageSource(
+                collection_id="fixture",
+                doc_id="DELIVERY-9",
+                chunk_no=1,
+                path="knowledge/delivery.md",
+                sha256="fixture",
+                locator={"start_char": 0},
+                metadata={"doc_type": "troubleshooting"},
+            ),
+        )
+    ]
+    manager, resources = manager_fixture(tmp_path, model, search)
+    model.responses = [
+        completion(calls=[plan_call([{"kind": "docs", "objective": "查明投递失败的处理规则"}])]),
+        completion(calls=[search_call("s1", "投递失败处理规则")]),
+        completion(calls=[read_call("r1", "DELIVERY-9")]),
+        grounded("规则结论。"),
+        completion(calls=[response_call("answer", answer="规则已查明。")]),
+        completion(calls=[intent_call("intent_2", "troubleshoot")]),
+        completion(calls=[plan_call([{"kind": "docs", "objective": "查投递失败的后续处理"}])]),
+        completion(calls=[search_call("s2", "投递失败后续处理")]),
+        grounded("规则结论二。"),
+        completion(calls=[response_call("answer", answer="已根据报告作答。")]),
+    ]
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await say(manager, sid, "first", TROUBLESHOOT)
+        await say(manager, sid, "second", "继续查投递失败的后续处理")
+        assert search.queries
+        assert any("pay_bg_001_0003" in text for text, _ in search.queries)
     finally:
         await manager.shutdown()
         resources.close()

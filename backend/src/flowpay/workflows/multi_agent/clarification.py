@@ -9,13 +9,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from flowpay.core.chat.record_ids import record_ids
 from flowpay.core.json import JsonObject, require_list, require_object
 from flowpay.core.tools import Tool, ToolInputError
 from flowpay.workflows.manual_loop import CONDITION_FIELDS, ConditionField
+
+if TYPE_CHECKING:
+    from flowpay.core.knowledge.contracts import Passage
 
 # 背景主题与题库的澄清类别一一对应：goal / symptom_details / occurrence_time /
 # api_version。枚举封闭，因此状态条目数天然有界，不需要额外封顶。
@@ -230,6 +234,42 @@ def query_with_facts(state: ClarificationState, query: str) -> str:
     """
     facts = [" ".join(value.split()) for value in state.answers.values() if value.strip()]
     return f"{query} {' '.join(facts)}" if facts else query
+
+
+# 第二跳拼接值的整体上限：沿用既有 ≤500 字符清洗口径（specs/009 FR-10）。
+FINDINGS_QUERY_CAP = 500
+
+
+def query_with_findings(
+    findings: Sequence[object], query: str, passages: Sequence[Passage] = ()
+) -> str:
+    """把本轮第一跳查得的记录编号拼进第二跳检索查询（specs/009 US5）。
+
+    多跳题的第二跳断链在"第一跳查到的记录值没进第二跳查询"；这里从 findings
+    的 target/digest 与已取回片段正文提取记录编号，追加到查询后面。findings
+    条目按鸭子类型只读 target/digest 两个属性（Finding 的形状），不反向导入
+    state（clarification 是 state 的被依赖方，静态 cycle 由引用方向产生）。
+    拼接值取有序集合并排序——同一 findings 集合产出同一查询文本，恢复续跑不
+    因拼接顺序漂移触发重查（审查 B4）；整体超过 FINDINGS_QUERY_CAP 时截断。
+    没有编号时原样返回，行为不变；与 query_with_facts 叠加使用（澄清答案 +
+    本轮发现互补）。
+    """
+    values: set[str] = set()
+    for item in findings:
+        target = getattr(item, "target", "")
+        digest = getattr(item, "digest", "")
+        values.update(record_ids(str(target)))
+        values.update(record_ids(str(digest)))
+    for passage in passages:
+        values.update(record_ids(passage.text))
+    if not values:
+        return query
+    suffix = " ".join(sorted(values))
+    room = FINDINGS_QUERY_CAP - len(query) - 1
+    if room <= 0:
+        return query
+    suffix = suffix[: max(room, 0)].rstrip()
+    return f"{query} {suffix}" if suffix else query
 
 
 def clarification_note(state: ClarificationState) -> str | None:
