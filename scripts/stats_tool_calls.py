@@ -27,7 +27,10 @@ def percentiles(values: list[float], marks: tuple[float, ...]) -> dict[float, fl
     if not values:
         return {mark: 0 for mark in marks}
     ordered = sorted(values)
-    return {mark: ordered[min(len(ordered) - 1, int(mark / 100 * len(ordered)))] for mark in marks}
+    return {
+        mark: ordered[min(len(ordered) - 1, int(mark / 100 * len(ordered)))]
+        for mark in marks
+    }
 
 
 def plan_task_count(payload: object) -> int | None:
@@ -73,7 +76,9 @@ def collect(paths: Sequence[str]) -> tuple[list[int], list[float]]:
             if require_text(kind) == "tool.started":
                 stats["tools"] += 1
             elif require_text(kind) == "model.response":
-                count = plan_task_count(require_object(parse_json(require_text(data)))["payload"])
+                count = plan_task_count(
+                    require_object(parse_json(require_text(data)))["payload"]
+                )
                 if count is not None:
                     stats["tasks"] = count
         for stats in runs.values():
@@ -87,8 +92,12 @@ def main(paths: Sequence[str]) -> None:
     per_run, per_task = collect(paths)
     marks = (50, 90, 95, 99, 100)
     print(f"runs_with_tools={len(per_run)} total_calls={sum(per_run)}")
-    per_run_view = {f"p{m:g}": v for m, v in percentiles([float(v) for v in per_run], marks).items()}
-    per_task_view = {f"p{m:g}": round(v, 1) for m, v in percentiles(per_task, marks).items()}
+    per_run_view = {
+        f"p{m:g}": v for m, v in percentiles([float(v) for v in per_run], marks).items()
+    }
+    per_task_view = {
+        f"p{m:g}": round(v, 1) for m, v in percentiles(per_task, marks).items()
+    }
     print("单轮口径：", per_run_view)
     print("单任务均值口径：", per_task_view)
     print(f"单任务 max={max(per_task) if per_task else 0}")
