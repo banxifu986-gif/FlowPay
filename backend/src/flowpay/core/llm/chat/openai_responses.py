@@ -31,13 +31,19 @@ _RESERVED_RESPONSE_KEYS = frozenset(
 )
 
 # 推理档位白名单；非法值启动即败，避免运行中才发现。
-_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
+_REASONING_EFFORTS = frozenset({"low", "medium", "high", "none"})
 
 
 def _reasoning_of(request_options: JsonObject) -> JsonObject:
-    """从 request_options 提取 reasoning 参数并校验档位；没有则不启用推理。"""
+    """从 request_options 提取 reasoning 参数并校验档位；没有则不启用推理。
+
+    "none" 是合法档位（无推理形态的基准口径），映射为不发 reasoning 字段——
+    Responses 端不推理与 chat 端 reasoning_effort="none" 语义一致。
+    """
     effort = request_options.get("reasoning_effort")
     if effort is None:
+        return {}
+    if effort == "none":
         return {}
     if effort not in _REASONING_EFFORTS:
         raise ValueError(f"Unknown reasoning_effort: {effort}")

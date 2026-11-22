@@ -194,6 +194,10 @@ class ClarificationUpdate(BaseModel):
         for item in unavailable_items:
             if isinstance(item, str) and item in CLARIFICATION_TOPICS and item not in unavailable:
                 unavailable.append(cast_topic(item))
+        # 同主题同时出现在 answers 与 unavailable 时以 answers 为准——与恢复侧
+        # ClarificationState.restore 的裁决一致，避免轮内/跨轮两套冲突语义。
+        answered = {answer.topic for answer in answers}
+        unavailable = [topic for topic in unavailable if topic not in answered]
         return cls(answers=answers, unavailable=unavailable)
 
 

@@ -53,10 +53,15 @@ class ResponsesStreamAccumulator:
             response = require_object(frame.get("response") or {})
             raw_usage = require_object(response.get("usage") or self.usage)
             # Responses 的字段名映射为 ChatCompletion 侧既有字段名（specs/008 data-model）。
+            # total 缺失时按 input+output 兜底，不让用量统计漏记总数。
+            prompt_tokens = require_int(raw_usage.get("input_tokens", 0))
+            completion_tokens = require_int(raw_usage.get("output_tokens", 0))
             self.usage = {
-                "prompt_tokens": require_int(raw_usage.get("input_tokens", 0)),
-                "completion_tokens": require_int(raw_usage.get("output_tokens", 0)),
-                "total_tokens": require_int(raw_usage.get("total_tokens", 0)),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": require_int(
+                    raw_usage.get("total_tokens", prompt_tokens + completion_tokens)
+                ),
             }
             return ""
         if kind == "response.failed":
@@ -104,7 +109,11 @@ class ResponsesStreamAccumulator:
                     function["arguments"] = final
 
     def finish(self) -> ChatCompletion:
-        """返回包含首个候选的 SDK ChatCompletion；缺少完成事件时拒绝返回成功。"""
+        """返回包含首个候选的 SDK ChatCompletion；缺少完成事件时拒绝返回成功。
+
+        推理项原文随 message 的扩展字段返回——下一轮 `_input_items` 依赖该字段
+        把 reasoning 回插到请求里（specs/008 完整重放口径）；没有推理项时键省略。
+        """
         if not self.finish_reason:
             raise RuntimeError("Responses stream ended without finish_reason")
         if self.tool_calls:
@@ -112,6 +121,8 @@ class ResponsesStreamAccumulator:
                 {key: value for key, value in self.tool_calls[index].items() if key != "_item_id"}
                 for index in sorted(self.tool_calls)
             ]
+        if self.reasoning_items:
+            self.message["reasoning_items"] = self.reasoning_items
         return ChatCompletion.model_construct(
             object="chat.completion",
             choices=[

@@ -98,6 +98,39 @@ def test_reasoning_items_are_kept_not_displayed() -> None:
     assert [item["encrypted_content"] for item in acc.reasoning_items] == ["enc-abc"]
 
 
+def test_reasoning_items_survive_finish_into_message() -> None:
+    """finish 后 reasoning_items 随 message 扩展字段返回，供下一轮 _input_items 回插。
+
+    审查发现的断裂点：聚合器收进了 reasoning_items 但 finish 组装 message 时漏挂，
+    导致加密推理每步全丢（静默，不报错）。本用例守住"聚合 → message → 历史写入"
+    的完整链路。
+    """
+    acc = ResponsesStreamAccumulator()
+    feed(
+        acc,
+        [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {"type": "reasoning", "id": "rs_1", "summary": []},
+            },
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc-abc"},
+            },
+            {"type": "response.output_text.delta", "delta": "答案"},
+            {"type": "response.completed", "response": {"usage": {}}},
+        ],
+    )
+    finished = acc.finish()
+    message = finished.choices[0].message
+    extra = message.model_extra or {}
+    assert extra.get("reasoning_items") == [
+        {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc-abc"}
+    ]
+
+
 def test_usage_maps_input_output_to_prompt_completion() -> None:
     """completed 帧的 usage 按 input/output/total 映射为既有字段名。"""
     acc = ResponsesStreamAccumulator()
