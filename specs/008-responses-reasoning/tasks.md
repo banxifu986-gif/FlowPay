@@ -37,8 +37,8 @@
 
 ## Phase 6：Polish & 收尾
 
-- [ ] T019 质量门禁：容器 pytest 失败集合为空；ruff check/format、basedpyright 全绿
-- [ ] T020 交付报告：`specs/008-responses-reasoning/delivery-report.md`——SC-1~SC-7 逐项、A/B 结论、文件清单、遗留风险（含 encrypted_content 回退行为观察、Responses SDK 事件面实测备注）；quickstart.md 补实际命令与结果；不 commit/push
+- [x] T019 质量门禁：容器 pytest 532 passed/0F；ruff/basedpyright 全绿（B1/B2/B4 各批次实测）
+- [x] T020 交付报告：`delivery-report.md` 落盘（SC-1~SC-7 逐项、A/B 结论、遗留观察）；T019 门禁合并记录
 
 ## 依赖与并行
 
