@@ -538,8 +538,7 @@ def degraded_answer(reports: list[WorkerReport]) -> str:
     if reports:
         blocks.append("\n".join(["已查到的结论：", *(f"- {r.text.strip()}" for r in reports)]))
     blocks.append(
-        "未能核实的部分：汇总环节两次未能生成有效回答，以上为调查阶段已确认的信息，"
-        "其余子项未能核实；请补充材料后继续排查。"
+        "未能核实的部分：汇总环节两次未能生成有效回答，以上为调查阶段已确认的信息，其余子项未能核实；请补充材料后继续排查。"
     )
     return "\n\n".join(blocks)
 
