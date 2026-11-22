@@ -24,6 +24,10 @@ quota_merchant_concurrency = 1
 failure_retry_attempts = 2
 failure_retry_delay_seconds = 1.0
 
+# 单 worker 单任务工具调用上限（specs/009 FR-9，超限收束属 US4/T020 实施）。
+# 校准依据见 settings.py 注释与 scripts/stats_tool_calls.py。
+investigation_tool_budget = 10
+
 # 混合检索（specs/006 US4）：pg_trgm 关键词路 + 向量路 RRF，零新增依赖。
 # 默认关闭（specs/008 US3）：qwen3 与 bge-m3 两个独立嵌入空间的全量评测中，混合检索
 # 与纯向量逐格相同（var/benchmark/20261121-full300-report.md 与 20261119-retrieval-full300.md），

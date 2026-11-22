@@ -93,6 +93,11 @@ class Settings:
     # 可重试失败（超时/限流/模型 5xx）的额外尝试数与线性退避基数。
     failure_retry_attempts: int = 2
     failure_retry_delay_seconds: float = 1.0
+    # 单 worker 单任务工具调用上限（specs/009 FR-9/T008，超限收束属 US4/T020 实施）。
+    # 默认 10（tasks.md 指定）；scripts/stats_tool_calls.py 对 R96B 事件库的校准：
+    # 单任务均值口径 p50=11 / p95=15.5 / max=23（单轮口径 max=40，全局 Budget 封顶
+    # 12+3n）——默认 10 低于实测中位数，US4 落地收束前需按本分布复核定档。
+    investigation_tool_budget: int = 10
     # 混合检索（specs/006 US4）：关键词路 + 向量路 RRF；测试直接构造
     # KnowledgeClient 时默认走纯向量，因此该开关只影响装配层。
     knowledge_hybrid: bool = True
