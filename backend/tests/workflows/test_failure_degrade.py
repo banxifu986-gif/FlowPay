@@ -478,7 +478,7 @@ async def test_partial_evidence_answers_with_unverified_mark(tmp_path: Path) -> 
         resources.close()
 
 
-def progress_events(events: list[object]) -> list[JsonObject]:
+def progress_events(events: list[Event]) -> list[JsonObject]:
     """提取 turn.progress 载荷；供断点落盘断言。"""
     return [
         require_object(require_object(e)["payload"])
