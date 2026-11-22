@@ -18,14 +18,45 @@ FailureCategory = Literal[
 # 429/402 正文里的配额线索：命中即按「额度用尽」处理，不再重试。
 QUOTA_KEYWORDS = ("quota", "billing", "insufficient", "额度", "余额")
 
+# FR-1 确定性白名单（specs/009）：错误形态枚举，测试固化；不做宽泛状态码归类。
+# 档位的职责是驱动工具链路禁用判定（FR-2）并进入 tool.outage 事件载荷——
+# manager 的重试语义不读本档位（现状模型类 400 已归 other，不可重试）。
+# ①嵌入/检索对查询文本的结构性拒绝（400/422 + 输入不合法语义）；
+# ②请求参数被供应商确定性拒绝（如推理参数不兼容）。首例关键词锚定 R96B
+# FP-BM-TV-0116 的真实嵌入 400 正文（SiliconFlow "The parameter is invalid."）。
+DETERMINISTIC_STATUSES = {400, 422}
+INPUT_INVALID_KEYWORDS = (
+    "parameter is invalid",
+    "invalid parameter",
+    "invalid input",
+    "输入不合法",
+    "参数不合法",
+    "参数无效",
+)
+PARAM_REJECTED_KEYWORDS = (
+    "unsupported parameter",
+    "unknown parameter",
+    "unrecognized parameter",
+    "not supported",
+)
+
 
 @dataclass(frozen=True)
 class FailureInfo:
-    """一次失败的分类、是否可重试与用户可见文案。"""
+    """一次失败的分类、是否可重试、确定性档位与用户可见文案。
+
+    deterministic 是 FR-1 确定性档位：只由工具包装层与 tool.outage 载荷消费，
+    不改变既有重试语义；约束为 True 时 retryable 必为 False。
+    """
 
     category: FailureCategory
     retryable: bool
     message: str
+    deterministic: bool = False
+
+    def __post_init__(self) -> None:
+        if self.deterministic and self.retryable:
+            raise ValueError("deterministic=True 时 retryable 必为 False")
 
 
 FRIENDLY: dict[FailureCategory, str] = {
@@ -39,10 +70,31 @@ FRIENDLY: dict[FailureCategory, str] = {
 
 
 def classify_failure(error: BaseException) -> FailureInfo:
-    """把异常映射成类别与恢复策略；分类不抛异常，未知一律归 other。"""
+    """把异常映射成类别与恢复策略；分类不抛异常，未知一律归 other。
+
+    确定性档位按白名单叠加：只对 4xx 输入类/参数拒绝形态置位，类别与重试
+    语义不变——4xx 白名单形态本就归 other（不可重试），档位只是显式标记。
+    """
     category = _category(error)
-    return FailureInfo(
+    info = FailureInfo(
         category, category in {"timeout", "rate_limit", "model_5xx"}, FRIENDLY[category]
+    )
+    if isinstance(error, ModelHTTPError) and _is_deterministic(error):
+        return FailureInfo(category, False, info.message, deterministic=True)
+    return info
+
+
+def _is_deterministic(error: ModelHTTPError) -> bool:
+    """FR-1 白名单：4xx 输入类拒绝与参数确定性拒绝；上下文超限不在此列（硬失败）。
+
+    上下文超限已在 _http_category 先行归类，不会走到本判定；正文关键词
+    小写比对，形态未命中白名单的 4xx 维持 other 档不做扩大。
+    """
+    if error.status_code not in DETERMINISTIC_STATUSES:
+        return False
+    lowered = error.body_excerpt.lower()
+    return any(keyword in lowered for keyword in INPUT_INVALID_KEYWORDS) or any(
+        keyword in lowered for keyword in PARAM_REJECTED_KEYWORDS
     )
 
 
