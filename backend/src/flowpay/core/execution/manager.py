@@ -377,9 +377,7 @@ class SessionManager:
             resumed_from = started["payload"].get("resumed_from") if started is not None else None
             cursor = resumed_from if isinstance(resumed_from, str) else None
         entries = [
-            e["payload"]
-            for e in events
-            if e["type"] == "turn.progress" and e["run_id"] in chain
+            e["payload"] for e in events if e["type"] == "turn.progress" and e["run_id"] in chain
         ]
         return merge_progress_payloads(entries)
 

@@ -7,13 +7,18 @@ transport 用 httpx.MockTransport 模拟（与 test_models.py 同手法），固
 
 # pyright: reportAttributeAccessIssue=false
 
+import inspect
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import cast
 
 import httpx
 import pytest
-from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessageParam,
+    ChatCompletionMessageToolCall,
+)
 from pydantic import TypeAdapter
 
 from flowpay.core.config import ModelSettings
@@ -67,7 +72,7 @@ FRAMES = [
 SSE = "".join(f"event: {f['type']}\ndata: {json.dumps(f)}\n\n" for f in FRAMES) + "data: [DONE]\n\n"
 
 
-def make_adapter(handler) -> OpenAiResponsesModel:
+def make_adapter(handler: Callable[[httpx.Request], httpx.Response]) -> OpenAiResponsesModel:
     return OpenAiResponsesModel(
         ModelSettings(
             provider="openai-compatible",
@@ -83,7 +88,7 @@ def make_adapter(handler) -> OpenAiResponsesModel:
 def test_prepare_builds_input_items_and_reasoning() -> None:
     """prepare 构造 input items、tools 与 reasoning 参数；不含密钥。"""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=SSE)
 
     adapter = make_adapter(handler)
@@ -121,7 +126,9 @@ def test_invoke_consumes_stream_and_maps_usage(monkeypatch: pytest.MonkeyPatch) 
     reply = adapter_sync_call(adapter, request, emit)
     assert reply.choices[0].message.content == "查询完成"
     tool_calls = reply.choices[0].message.tool_calls
-    assert tool_calls is not None and tool_calls[0].function.arguments == '{"id": "req_1"}'
+    assert tool_calls is not None
+    first_call = cast("ChatCompletionMessageToolCall", tool_calls[0])
+    assert first_call.function.arguments == '{"id": "req_1"}'
     assert reply.usage is not None and reply.usage.total_tokens == 480
     wire = [c for c in chunks if c.get("kind") == "wire"]
     assert len(wire) == len(FRAMES) + 1  # 含 [DONE]
@@ -200,7 +207,7 @@ def test_reasoning_items_replay_into_next_request(monkeypatch: pytest.MonkeyPatc
     assert reasoning and reasoning[0]["encrypted_content"] == "enc-0"
 
 
-def test_reasoning_effort_whitelist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reasoning_effort_whitelist() -> None:
     """非法档位启动即败；合法档位进请求。"""
     with pytest.raises(ValueError, match="reasoning_effort"):
         OpenAiResponsesModel(
@@ -212,13 +219,15 @@ def test_reasoning_effort_whitelist(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
-def adapter_sync_call(adapter: OpenAiResponsesModel, request: JsonObject, emit) -> ChatCompletion:
+def adapter_sync_call(
+    adapter: OpenAiResponsesModel, request: JsonObject, emit: Callable[[JsonObject], object]
+) -> ChatCompletion:
     """在事件循环外执行 async invoke（测试便捷入口）。"""
     import asyncio
 
     async def emit_async(chunk: JsonObject) -> None:
         result = emit(chunk)
-        if result is not None and hasattr(result, "__await__"):
+        if inspect.isawaitable(result):
             await result
 
     return asyncio.run(adapter.invoke(request, emit_async))

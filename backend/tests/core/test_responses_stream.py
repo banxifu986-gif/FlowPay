@@ -8,7 +8,10 @@ function 变体；类型检查器无法收窄 union，这两条断言关闭该�
 
 # pyright: reportAttributeAccessIssue=false
 
+from typing import cast
+
 import pytest
+from openai.types.chat import ChatCompletionMessageToolCall
 
 from flowpay.core.json import JsonObject
 from flowpay.core.llm.chat.responses_stream import ResponsesStreamAccumulator
@@ -68,7 +71,7 @@ def test_function_call_fragments_accumulate_by_item() -> None:
     assert text == ""
     finished = acc.finish()
     tool_calls = finished.choices[0].message.tool_calls
-    first = tool_calls[0] if tool_calls else None
+    first = cast("ChatCompletionMessageToolCall", tool_calls[0]) if tool_calls else None
     assert first is not None
     assert first.function.name == "get_request"
     assert first.function.arguments == '{"id":"req_1"}'

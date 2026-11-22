@@ -29,7 +29,7 @@ from flowpay.core.llm.chat import ChunkSink
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.workflows.multi_agent import MultiAgentWorkflow
 from flowpay.workflows.multi_agent.clarification import ClarificationState
-from flowpay.workflows.multi_agent.state import SharedTurn
+from flowpay.workflows.multi_agent.state import Finding, SharedTurn
 
 if TYPE_CHECKING:
     from flowpay.workflows.manual_loop import ConditionField
@@ -1723,10 +1723,8 @@ async def test_doc_search_uses_the_rewritten_query(tmp_path: Path) -> None:
 # --- specs/009 US5 多跳两段式（T024）：findings 结论值拼进第二跳查询 ---
 
 
-def finding(tool: str, target: str, digest: str) -> "Finding":
+def finding(tool: str, target: str, digest: str) -> Finding:
     """构造一条结论摘要；rows 取 0 只为满足签名。"""
-    from flowpay.workflows.multi_agent.state import Finding
-
     return Finding(tool, target, 0, digest)
 
 
@@ -1766,9 +1764,9 @@ def test_second_hop_without_findings_is_noop() -> None:
 
     assert query_with_findings([], "Webhook 重试策略") == "Webhook 重试策略"
     # findings 里没有编号也一样。
-    assert query_with_findings([finding("search_documents", "重试策略", "0 个片段")], "重试策略") == (
-        "重试策略"
-    )
+    assert query_with_findings(
+        [finding("search_documents", "重试策略", "0 个片段")], "重试策略"
+    ) == ("重试策略")
 
 
 def test_second_hop_value_capped_at_500_chars() -> None:

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -130,6 +131,11 @@ def fake_ollama_tags(digest: str):
     return httpx.MockTransport(handler)
 
 
+def _client_factory(transport: httpx.AsyncBaseTransport) -> partial[httpx.AsyncClient]:
+    """构造注入 ollama 模块的 httpx.AsyncClient 工厂（partial 绑定 transport，签名同源）。"""
+    return partial(httpx.AsyncClient, transport=transport)
+
+
 class RecordingStore:
     """记录写入调用的知识存储替身；不连接真实数据库。
 
@@ -221,8 +227,13 @@ class RecordingEvents:
         self.kinds: list[str] = []
         self.payloads: list[JsonObject] = []
 
-    async def emit(self, kind: str, payload: JsonObject, **kwargs) -> object:
-        _ = kwargs
+    async def emit(
+        self,
+        kind: str,
+        payload: JsonObject,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
         self.kinds.append(kind)
         self.payloads.append(payload)
         return object()
@@ -278,9 +289,7 @@ async def test_ollama_identity_pins_digest_with_fake_transport(
     monkeypatch.setattr(
         ollama_module,
         "httpx",
-        SimpleNamespace(
-            AsyncClient=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs)
-        ),
+        SimpleNamespace(AsyncClient=_client_factory(transport)),
     )
     deployment = await ollama_identity(local_embedding())
     assert deployment.digest == DIGEST
@@ -308,7 +317,7 @@ async def test_cloud_build_skips_ollama_deployment_check(
 ) -> None:
     """云端配置跑 build 不再抛 Model is not installed；事件只记录向量空间身份。"""
 
-    async def forbidden(settings):
+    async def forbidden(settings: EmbeddingSettings):
         _ = settings
         raise AssertionError("云端配置不应做本机 Ollama 部署核对")
 
@@ -331,9 +340,7 @@ async def test_local_build_still_checks_digest(
     monkeypatch.setattr(
         ollama_module,
         "httpx",
-        SimpleNamespace(
-            AsyncClient=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs)
-        ),
+        SimpleNamespace(AsyncClient=_client_factory(transport)),
     )
 
     builder, events = await run_build(tmp_path, local_embedding(), monkeypatch)
@@ -352,9 +359,7 @@ async def test_local_build_rejects_drifted_digest(
     monkeypatch.setattr(
         ollama_module,
         "httpx",
-        SimpleNamespace(
-            AsyncClient=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs)
-        ),
+        SimpleNamespace(AsyncClient=_client_factory(transport)),
     )
     drifted = EmbeddingSettings(
         "qwen3-embedding", "http://127.0.0.1:11434/v1", 3, "UNUSED", revision=DIGEST
@@ -376,11 +381,10 @@ async def test_benchmark_stage_guards_ollama_check_by_endpoint(
 
     calls: list[str] = []
 
-    async def record(settings) -> None:
+    async def record(settings: EmbeddingSettings) -> None:
         calls.append(settings.name)
 
-    def raise_stop(*args, **kwargs):
-        _ = args, kwargs
+    def raise_stop(*_args: object, **_kwargs: object) -> object:
         raise Stop
 
     monkeypatch.setattr(benchmark_run, "ollama_identity", record)
@@ -389,15 +393,19 @@ async def test_benchmark_stage_guards_ollama_check_by_endpoint(
     def toml(base_url: str) -> Path:
         config = tmp_path / f"{base_url.split('//')[1].split('/')[0]}.toml"
         config.write_text(
-            "data_dir = 'var'\n"
-            "dataset_path = 'dataset'\n"
-            "[embedding]\n"
-            "provider = 'openai-compatible'\n"
-            "name = 'BAAI/bge-m3'\n"
-            f"base_url = '{base_url}'\n"
-            "dimensions = 1024\n"
-            "api_key_env = 'FLOWPAY_EMBEDDING_API_KEY'\n"
-            "revision = 'siliconflow-baai-bge-m3'\n"
+            "\n".join(
+                [
+                    "data_dir = 'var'",
+                    "dataset_path = 'dataset'",
+                    "[embedding]",
+                    "provider = 'openai-compatible'",
+                    "name = 'BAAI/bge-m3'",
+                    f"base_url = '{base_url}'",
+                    "dimensions = 1024",
+                    "api_key_env = 'FLOWPAY_EMBEDDING_API_KEY'",
+                    "revision = 'siliconflow-baai-bge-m3'",
+                ]
+            )
         )
         return config
 
@@ -420,8 +428,7 @@ async def test_checks_embedding_guards_local_model_check_by_endpoint(
     def settings_with(embedding: EmbeddingSettings) -> Settings:
         return Settings(data_dir=Path("var"), dataset_path=Path("dataset"), embedding=embedding)
 
-    async def forbidden(embedding) -> None:
-        _ = embedding
+    async def forbidden(_embedding: EmbeddingSettings) -> None:
         raise AssertionError("云端配置不应做本机 Ollama 部署核对")
 
     monkeypatch.setattr(checks, "ollama_identity", forbidden)
@@ -430,23 +437,19 @@ async def test_checks_embedding_guards_local_model_check_by_endpoint(
     assert "云端嵌入服务（api.siliconflow.cn）" in output
 
     shim = SimpleNamespace(
-        AsyncClient=lambda **kwargs: httpx.AsyncClient(
-            transport=fake_ollama_tags(DIGEST), **kwargs
-        ),
+        AsyncClient=_client_factory(fake_ollama_tags(DIGEST)),
         HTTPError=httpx.HTTPError,
     )
     monkeypatch.setattr(checks, "httpx", shim)
 
-    async def drifted(embedding) -> None:
-        _ = embedding
+    async def drifted(_embedding: EmbeddingSettings) -> None:
         raise ValueError("Ollama model digest differs from embedding.revision")
 
     monkeypatch.setattr(checks, "ollama_identity", drifted)
     with pytest.raises(PreparationError, match="不匹配"):
         await checks.check_embedding(settings_with(local_embedding()), False)
 
-    def refused(**kwargs):
-        _ = kwargs
+    def refused(**_kwargs: object) -> httpx.AsyncClient:
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(

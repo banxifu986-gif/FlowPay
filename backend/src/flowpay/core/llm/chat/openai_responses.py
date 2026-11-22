@@ -67,14 +67,18 @@ def _input_items(messages: Sequence[ChatCompletionMessageParam]) -> list[JsonObj
         if role == "assistant":
             # SDK 校验会把 tool_calls 变成 ValidatorIterator 等验证器对象；
             # 推理项是纯扩展字段保持 list。翻译按"可枚举"读取，不假设具体容器。
-            reasoning_items = message.get("reasoning_items") or []
-            if not isinstance(reasoning_items, list):
-                reasoning_items = list(cast("Iterable[object]", reasoning_items))
+            reasoning_raw: object = message.get("reasoning_items") or []
+            if not isinstance(reasoning_raw, list):
+                reasoning_items = list(cast("Iterable[object]", reasoning_raw))
+            else:
+                reasoning_items = cast("list[object]", reasoning_raw)
             for reasoning in reasoning_items:
                 items.append(require_object(reasoning))
-            calls = message.get("tool_calls") or []
-            if not isinstance(calls, list):
-                calls = list(cast("Iterable[object]", calls))
+            calls_raw: object = message.get("tool_calls") or []
+            if not isinstance(calls_raw, list):
+                calls = list(cast("Iterable[object]", calls_raw))
+            else:
+                calls = cast("list[object]", calls_raw)
             content = message.get("content")
             if isinstance(content, str) and content:
                 items.append({"role": "assistant", "content": content})

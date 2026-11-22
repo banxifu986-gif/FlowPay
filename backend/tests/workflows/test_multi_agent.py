@@ -13,7 +13,7 @@ from flowpay.core.chat.projection import ContextPolicy
 from flowpay.core.chat.types import SessionView
 from flowpay.core.config import Settings
 from flowpay.core.data_sources import DataSources
-from flowpay.core.event_log import EventStore
+from flowpay.core.event_log import EventStore, EventStoreProtocol
 from flowpay.core.execution.manager import SessionManager
 from flowpay.core.execution.resources import RuntimeResources
 from flowpay.core.json import JsonObject, require_list, require_object, require_text
@@ -831,7 +831,7 @@ def test_merge_old_findings_noop_under_cap() -> None:
 # ---- specs/009 US4（T021）：plan 校验三路径（改派/重计划/丢弃）----
 
 
-def reassigned_events(store: EventStore, sid: str) -> list[JsonObject]:
+def reassigned_events(store: EventStoreProtocol, sid: str) -> list[JsonObject]:
     """读取会话事件里的 task.reassigned 载荷列表。"""
     return [
         require_object(event["payload"])
@@ -840,7 +840,7 @@ def reassigned_events(store: EventStore, sid: str) -> list[JsonObject]:
     ]
 
 
-def dropped_events(store: EventStore, sid: str) -> list[JsonObject]:
+def dropped_events(store: EventStoreProtocol, sid: str) -> list[JsonObject]:
     """读取会话事件里的 task.dropped 载荷列表。"""
     return [
         require_object(event["payload"])

@@ -1103,9 +1103,7 @@ def doc_worker_node(
             check_chain(shared, "embedding")
             # 多跳两段式（specs/009 US5）：本轮第一跳查得的记录编号也拼进查询——
             # findings 的 target/digest 加片段正文，排序去重保证同集合同文本（B4）。
-            rewritten = query_with_findings(
-                shared.findings, rewritten, shared.retrieved.all()
-            )
+            rewritten = query_with_findings(shared.findings, rewritten, shared.retrieved.all())
             if refused := claim(shared, "search", rewritten):
                 return DocumentSearchResult(query, [], refused)
             hits = shared.retrieved.add(
