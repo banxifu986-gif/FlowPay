@@ -16,8 +16,10 @@ from flowpay.core.chat.record_ids import RECORD_ID
 # 统一未证实口径（FR-7）：作答与报表统计共用同一份词面。
 UNVERIFIED_MARK = "未能核实"
 
-# 片段引用标记形如 [doc:KB-TS-012#c001]；与 DOC_WORKER_PROMPT 的示例一致。
-PASSAGE_REF = re.compile(r"\[doc:[^\]]+\]")
+# 片段引用标记两种形态：[doc:KB-TS-012#c001]（DOC_WORKER_PROMPT 的示例格式）与
+# 裸 KB-{模块}-{序号}#c{片段}（模型实际输出的主流格式，T026 冒烟实证——只认
+# [doc:...] 会把带 KB 引用的正确断言误降级，宁可漏判不误伤）。
+PASSAGE_REF = re.compile(r"\[doc:[^\]]+\]|KB-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*#c\d+")
 
 # 断言线索词：句子里出现才进入降级判定。没有线索词的句子（操作指引、客套话）
 # 直接放行——降级的对象是"宣布了某个事实"的句子，不是所有无标记句子。裸"已"
