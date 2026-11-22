@@ -9,18 +9,28 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from flowpay.core.json import JsonObject, require_object, require_text, to_json_object
 from flowpay.core.llm.chat.http_error import ModelHTTPError
-from flowpay.workflows.multi_agent.investigation import check_chain, guarded_call
+from flowpay.core.llm.chat.messages import ModelOutputError
+from flowpay.workflows.multi_agent.clarification import ClarificationRequest
+from flowpay.workflows.multi_agent.investigation import (
+    check_chain,
+    guarded_call,
+    resolve_response,
+)
 from flowpay.workflows.multi_agent.state import (
     SharedTurn,
     SubtaskProgress,
+    WorkerReport,
     merge_task_progress,
     task_key,
 )
 from tests.core.principals import INTERNAL
 
 from .fixtures import Model, Search, completion, intent_call, search_call, tasks_call
+from .test_clarification import response_call
 from .test_multi_agent import make_manager
 
 # R96B FP-BM-TV-0116 的真实嵌入 400 正文（SiliconFlow code=20015）：白名单锚点。
@@ -256,6 +266,118 @@ async def test_deterministic_outage_disables_chain_for_rest_of_turn(tmp_path: Pa
         content = json.dumps(model.requests[-1]["messages"], ensure_ascii=False)
         assert "查明重试策略" in content and "查明退避规则" in content
         assert "RuntimeError" in content  # 第二个任务的禁用即收束说明
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+def _answer_call(answer: str) -> JsonObject:
+    """构造一次 set_response 作答决策（test_clarification 的 response_call 同形）。"""
+    return response_call("answer", answer=answer)
+
+
+def test_resolve_response_partial_evidence_keeps_model_answer() -> None:
+    """部分证据：作答决策原样落地（waiting=False），未证实表述由决策正文携带。"""
+    shared = SharedTurn()
+    reports = [
+        WorkerReport("docs", "重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        WorkerReport("sql", "调查任务「查明扣款状态」未能完成：RuntimeError: offline。"),
+    ]
+    resolved = resolve_response(
+        shared, reports, completion(calls=[_answer_call("扣款状态未能核实：查询链路本轮不可用。")])
+    )
+    assert resolved.waiting is False
+    assert resolved.source == "model"
+    assert "未能核实" in resolved.text
+
+
+def test_resolve_response_all_chains_failed_still_answers_without_waiting() -> None:
+    """全部工具失效：报告全是收束说明也按作答落地，不转等待、不转澄清。"""
+    shared = SharedTurn()
+    reports = [
+        WorkerReport("sql", "调查任务「查明扣款」未能完成：RuntimeError: offline。"),
+        WorkerReport("docs", "调查任务「查明规则」未能完成：RuntimeError: offline。"),
+    ]
+    answer = completion(calls=[_answer_call("两个子项均未能核实：调查链路本轮不可用。")])
+    resolved = resolve_response(shared, reports, answer)
+    assert resolved.waiting is False
+    assert resolved.source == "model"
+
+
+def test_resolve_response_empty_output_raises_without_pending() -> None:
+    """无决策且无 pending：空正文按既有口径抛 ModelOutputError（FR-12 触发条件）。"""
+    with pytest.raises(ModelOutputError):
+        resolve_response(SharedTurn(), [], completion(None))
+
+
+def test_resolve_response_pending_takes_clarify_priority_on_empty_output() -> None:
+    """pending 存在时维持 clarify 优先回退：空输出不抛，按等待轮收束（2026-11-23 拍板）。"""
+    shared = SharedTurn()
+    shared.pending.append(ClarificationRequest(conditions=("account_id",), question="请提供账户"))
+    resolved = resolve_response(shared, [], completion(None))
+    assert resolved.waiting is True
+    assert resolved.source == "fallback"
+    assert resolved.mode == "clarify"
+
+
+async def test_synthesize_empty_output_retries_once_then_answers(tmp_path: Path) -> None:
+    """FR-12（SC-2）：synthesize 空输出 → model.retry 恰一次 → 重试后作答，无 run.failed。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])]),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion(None),  # synthesize 首次调用：无决策、空正文
+        completion("已根据调查报告回答。"),
+    ]
+    manager, resources = make_manager(tmp_path, model, Search())
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        events = manager.store.read(sid)
+        assert require_text(view["status"]) == "completed"  # 不产生 run.failed
+        assert require_text(view["messages"][-1]["content"]) == "已根据调查报告回答。"
+        retries = [e for e in events if e["type"] == "model.retry"]
+        assert len(retries) == 1  # 确定性重试恰一次
+        assert require_text(require_object(retries[0]["payload"])["error_type"]) == (
+            "ModelOutputError"
+        )
+        assert not [e for e in events if e["type"] == "run.retry"]
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_synthesize_double_empty_output_finishes_with_placeholder(tmp_path: Path) -> None:
+    """FR-12（SC-3）：重试仍空 → 诚实占位完成（携带已查结论 + 未能核实），无 run.failed。"""
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])]),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion(None),  # 首次空输出
+        completion(None),  # 重试仍空
+    ]
+    manager, resources = make_manager(tmp_path, model, Search())
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        events = manager.store.read(sid)
+        assert require_text(view["status"]) == "completed"  # 占位完成而非 run.failed
+        answer = require_text(view["messages"][-1]["content"])
+        assert "已查到的结论" in answer and "HTTP 410" in answer  # 已查部分照常作答
+        assert "未能核实" in answer  # 统一未证实口径
+        retries = [e for e in events if e["type"] == "model.retry"]
+        assert len(retries) == 1
+        decided = [e for e in events if e["type"] == "clarification.decided"]
+        assert require_text(require_object(decided[-1]["payload"])["source"]) == "fallback"
+        assert require_object(require_object(decided[-1]["payload"]))["mode"] == "answer"
     finally:
         await manager.shutdown()
         resources.close()
