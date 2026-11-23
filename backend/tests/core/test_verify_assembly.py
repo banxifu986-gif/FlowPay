@@ -46,6 +46,7 @@ def test_bundle_carries_text_question_refs_and_record_ids() -> None:
     assert bundle.question == "企业版工单响应时长是多少？"
     assert bundle.refs == ("KB-TS-012#c001", "KB-BILL-003#c001")
     assert bundle.record_ids == ("pay_bg_001_0003",)
+    assert bundle.passages == tuple(ROUNDS)  # 全轮片段集保留，处置子集校验按断言绑定解析
 
 
 def test_bound_passages_matched_and_ranked_capped_by_budget() -> None:

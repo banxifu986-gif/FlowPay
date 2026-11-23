@@ -71,7 +71,9 @@ class EvidenceBundle:
 
     refs/record_ids 是待校验文本里出现的引用（绑定口径的来源）；bound_passages 是
     引用能对上的原文，known_ids 是本轮全部片段 id（含裸形态），ID 存在性按它核对
-    而非被预算截断后的渲染集。missing_records 的断言由批量校验侧按证据不足处置。
+    而非被预算截断后的渲染集。passages 保留本轮全量片段（处置的子集校验按断言
+    绑定解析证据原文，不受预算截断影响）。missing_records 的断言由批量校验侧按
+    证据不足处置。
     """
 
     text: str
@@ -79,6 +81,7 @@ class EvidenceBundle:
     refs: tuple[str, ...]
     record_ids: tuple[str, ...]
     known_ids: frozenset[str]
+    passages: tuple[Passage, ...]
     bound_passages: tuple[Passage, ...]
     ranked_passages: tuple[Passage, ...]
     record_excerpts: tuple[tuple[str, str], ...]
@@ -127,6 +130,7 @@ def assemble_evidence(
         known_ids=frozenset(
             identifier for passage in passages for identifier in (passage.id, bare_id(passage.id))
         ),
+        passages=tuple(passages),
         bound_passages=tuple(bound),
         ranked_passages=tuple(ranked),
         record_excerpts=tuple(excerpts),
