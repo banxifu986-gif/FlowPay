@@ -749,9 +749,9 @@ def _seconds_until_utc_midnight() -> int:
 def merge_progress_payloads(entries: list[JsonObject]) -> list[JsonObject]:
     """按幂等键合并 turn.progress 载荷；已收束条目不被未收束覆盖（specs/009 FR-4）。
 
-    core 层不解析 workflow 实体：以原始 JSON 的 key/finished 字段裁决，与
-    workflow 侧 merge_task_progress 的合并口径一致。缺 key 的坏载荷跳过，
-    不阻塞恢复注入。
+    core 层不解析 workflow 实体：以原始 JSON 的 key/finished 字段裁决——并行
+    worker 的落库顺序无保证（Send 分发），只有 finished=True 的后写者可以替换
+    已收束条目，未收束条目永不回退进度。缺 key 的坏载荷跳过，不阻塞恢复注入。
     """
     merged: dict[str, JsonObject] = {}
     for entry in entries:

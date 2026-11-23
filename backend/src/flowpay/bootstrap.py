@@ -76,4 +76,11 @@ def create_workflow(settings: Settings) -> Workflow:
         if settings.model.protocol == "responses"
         else OpenAiChatModel(settings.model)
     )
-    return create_stage(stage, chat_model, query_input, context_policy, memory_policy)
+    return create_stage(
+        stage,
+        chat_model,
+        query_input,
+        context_policy,
+        memory_policy,
+        investigation_tool_budget=settings.investigation_tool_budget,
+    )

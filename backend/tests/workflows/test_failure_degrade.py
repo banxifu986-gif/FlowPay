@@ -13,8 +13,10 @@ from typing import cast, override
 import pytest
 
 from flowpay.core.event_log.types import Event
+from flowpay.core.execution.manager import merge_progress_payloads
 from flowpay.core.json import (
     JsonObject,
+    require_int,
     require_list,
     require_object,
     require_text,
@@ -26,6 +28,7 @@ from flowpay.core.llm.chat.messages import ModelOutputError
 from flowpay.workflows.multi_agent.clarification import ClarificationRequest
 from flowpay.workflows.multi_agent.investigation import (
     check_chain,
+    claim,
     guarded_call,
     resolve_response,
 )
@@ -33,7 +36,6 @@ from flowpay.workflows.multi_agent.state import (
     SharedTurn,
     SubtaskProgress,
     WorkerReport,
-    merge_task_progress,
     task_key,
 )
 from tests.core.principals import INTERNAL, MERCHANT
@@ -60,11 +62,12 @@ EMBEDDING_400 = ModelHTTPError(
 
 
 def test_shared_turn_has_outage_and_progress_fields() -> None:
-    """SharedTurn 新增三类字段：禁用登记、子任务断点、单任务工具计数（run 内单例）。"""
+    """SharedTurn 新增四类字段：禁用登记、子任务断点、单任务工具计数与上限（run 内单例）。"""
     shared = SharedTurn()
     assert shared.tool_outages == set()
     assert shared.task_progress == {}
     assert shared.task_tool_calls == {}
+    assert shared.investigation_tool_budget == 16
 
 
 def test_task_key_is_worker_plus_objective() -> None:
@@ -95,41 +98,113 @@ def test_restore_rejects_malformed_progress_payload() -> None:
     assert SubtaskProgress.restore({"worker": "doc_worker"}) is None  # 缺关键键
 
 
-def test_merge_task_progress_keeps_finished_over_unfinished() -> None:
-    """并行落库顺序无保证：已收束条目不被未收束同名条目覆盖（双向验证）。"""
+def test_merge_progress_payloads_keeps_finished_over_unfinished() -> None:
+    """并行落库顺序无保证：已收束条目不被未收束同名条目覆盖（双向验证）。
+
+    合并裁决在 manager 层（core 不解析 workflow 实体），以原始 JSON 的
+    key/finished 字段判定（specs/009 FR-4；审查 I2 收敛双实现后此处测生产实现）。
+    """
     key = task_key("doc_worker", "查明重试策略")
-    partial = SubtaskProgress(key, "doc_worker", "查明重试策略", ["search:重试策略"], [], [], False)
-    done = SubtaskProgress(
-        key,
-        "doc_worker",
-        "查明重试策略",
-        ["search:重试策略", "read:RULE-1"],
-        ["1 个片段；首片 doc:RULE-1#c001"],
-        ["doc:RULE-1#c001"],
-        True,
-    )
-    forward = merge_task_progress([partial, done])
-    assert forward[key].finished is True
-    assert forward[key].done_keys == ["search:重试策略", "read:RULE-1"]
-    backward = merge_task_progress([done, partial])
-    assert backward[key].finished is True
-    assert backward[key].done_keys == ["search:重试策略", "read:RULE-1"]
+    partial: JsonObject = {"key": key, "finished": False, "done_keys": ["search:重试策略"]}
+    done: JsonObject = {
+        "key": key,
+        "finished": True,
+        "done_keys": ["search:重试策略", "read:RULE-1"],
+    }
+    forward = merge_progress_payloads([partial, done])
+    assert forward == [done]
+    backward = merge_progress_payloads([done, partial])
+    assert backward == [done]
 
 
-def test_merge_task_progress_separate_keys_and_repeat_finished() -> None:
+def test_merge_progress_payloads_separate_keys_and_repeat_finished() -> None:
     """不同键互不覆盖；同名已收束条目以后写者为准（重放事件按序归一）。"""
-    sql_key = task_key("sql_worker", "查明扣款状态")
     doc_key = task_key("doc_worker", "查明重试策略")
-    first = SubtaskProgress(doc_key, "doc_worker", "查明重试策略", ["search:a"], [], [], True)
-    second = SubtaskProgress(
-        doc_key, "doc_worker", "查明重试策略", ["search:a", "read:B"], [], [], True
+    sql_key = task_key("sql_worker", "查明扣款状态")
+    first: JsonObject = {"key": doc_key, "finished": True, "done_keys": ["search:a"]}
+    second: JsonObject = {
+        "key": doc_key,
+        "finished": True,
+        "done_keys": ["search:a", "read:B"],
+    }
+    sql: JsonObject = {"key": sql_key, "finished": True, "done_keys": ["payments account=1"]}
+    merged = merge_progress_payloads([first, second, sql])
+    assert merged == [second, sql]
+
+
+def test_claim_double_books_task_tool_calls() -> None:
+    """FR-9 双记账：task_key 非空时该任务计数随 claim 递增；去重命中不重复记账。"""
+    shared = SharedTurn()
+    key = task_key("doc_worker", "查明重试策略")
+    assert claim(shared, "search", "重试策略", key) is None
+    assert claim(shared, "search", "退避规则", key) is None
+    assert shared.task_tool_calls == {key: 2}
+    assert claim(shared, "search", "重试策略", key) is not None  # 去重命中，不计入
+    assert shared.task_tool_calls[key] == 2
+    assert claim(shared, "search", "口径问题") is None  # 不带任务键的 claim 不双记账
+    assert shared.task_tool_calls[key] == 2
+
+
+async def test_task_budget_collapse_carries_findings_and_keeps_global_budget(
+    tmp_path: Path,
+) -> None:
+    """FR-9 集成（SC-3 预算收束来源）：单任务达上限即收束——携带已查发现、发事件、落断点。
+
+    两任务上限=2：各自执行 2 次检索后收束（task.budget_exhausted 载荷 calls=2、
+    limit=2、键各归各任务）；knowledge.request 共 4 次——全局预算（12）远未触顶，
+    证收束只对单任务生效；两任务断点 finished=True（收束即断点）；整轮 completed。
+    """
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(
+            calls=[
+                tasks_call(
+                    "t1",
+                    [
+                        {"kind": "docs", "objective": "查明重试策略"},
+                        {"kind": "docs", "objective": "查明退避规则"},
+                    ],
+                )
+            ]
+        ),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion(calls=[search_call("s2", "重试策略二")]),
+        completion(calls=[search_call("s3", "退避规则")]),
+        completion(calls=[search_call("s4", "退避规则二")]),
+        completion("已根据调查报告回答。"),
+    ]
+    manager, resources = make_manager(
+        tmp_path, model, Search(), max_concurrency=1, investigation_tool_budget=2
     )
-    sql = SubtaskProgress(
-        sql_key, "sql_worker", "查明扣款状态", ["payments account=1"], [], [], True
-    )
-    merged = merge_task_progress([first, second, sql])
-    assert set(merged) == {doc_key, sql_key}
-    assert merged[doc_key].done_keys == ["search:a", "read:B"]
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        events = manager.store.read(sid)
+        assert require_text(view["status"]) == "completed"
+        exhausted = [e for e in events if e["type"] == "task.budget_exhausted"]
+        assert len(exhausted) == 2
+        keys: set[str] = set()
+        for event in exhausted:
+            payload = require_object(event["payload"])
+            assert require_int(payload["calls"]) == 2
+            assert require_int(payload["limit"]) == 2
+            keys.add(require_text(payload["key"]))
+        assert keys == {
+            task_key("doc_worker", "查明重试策略"),
+            task_key("doc_worker", "查明退避规则"),
+        }
+        # 4 次检索全部发生：收束只对单任务生效，其余任务照常执行。
+        assert len([e for e in events if e["type"] == "knowledge.request"]) == 4
+        # 收束即断点：两任务都落 finished=True 的 turn.progress。
+        payloads = progress_events(events)
+        assert len(payloads) == 2
+        assert all(payload["finished"] is True for payload in payloads)
+    finally:
+        await manager.shutdown()
+        resources.close()
 
 
 class RecordingTracer:
@@ -442,6 +517,36 @@ async def test_synthesize_double_empty_output_finishes_with_placeholder(tmp_path
         resources.close()
 
 
+async def test_placeholder_finish_citation_checks_report_lines(tmp_path: Path) -> None:
+    """FR-12 占位完成同样经引用校验（SC-5 无豁口，审查 I1）。
+
+    worker 报告含无引用断言句时，占位正文原样嵌入会裸奔输出——降级为统一
+    未证实口径后才落最终作答；有引用的报告句不受影响。
+    """
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(calls=[tasks_call("t1", [{"kind": "docs", "objective": "查明重试策略"}])]),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("退款是允许的。"),  # worker 报告：无引用断言句
+        completion(None),  # synthesize 首次空输出
+        completion(None),  # 重试仍空 → 占位完成
+    ]
+    manager, resources = make_manager(tmp_path, model, Search())
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        assert require_text(view["status"]) == "completed"
+        answer = require_text(view["messages"][-1]["content"])
+        assert "未能核实：退款是允许的。" in answer  # 占位里的断言句被降级
+        assert "已查到的结论" in answer
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
 async def test_partial_evidence_answers_with_unverified_mark(tmp_path: Path) -> None:
     """部分证据 + 链路禁用（SC-3）：已查子项照常作答，失败子项标注未能核实。
 
@@ -600,6 +705,31 @@ def test_dispatch_filters_finished_subtasks_on_resume() -> None:
     payload = cast("GraphState", sends[0].arg)
     remaining = [task.objective for task in payload["tasks"]]
     assert remaining == ["查明扣款状态"]  # 已收束子任务被过滤，其余照常分发
+
+
+def test_dispatch_tolerates_corrupted_progress_container() -> None:
+    """恢复注入的 task_progress 容器形状损坏：按空处理，不抛错阻断续跑（审查 M5）。
+
+    容器损坏只损失断点过滤——两任务照常分发，与坏载荷条目（restore 按 None
+    跳过）同一容忍口径。
+    """
+    from flowpay.workflows.multi_agent.graph import dispatch
+    from flowpay.workflows.multi_agent.state import GraphState, InvestigationTask
+
+    state: GraphState = {
+        "user_message": "帮我看看",
+        "saved_state": {"task_progress": "corrupted-shape"},
+        "intent": "troubleshoot",
+        "tasks": [
+            InvestigationTask(kind="docs", objective="查明重试策略"),
+            InvestigationTask(kind="sql", objective="查明扣款状态"),
+        ],
+        "reports": [],
+        "answer": "",
+        "waiting": False,
+    }
+    sends = dispatch(state)
+    assert isinstance(sends, list) and len(sends) == 2
 
 
 async def test_resume_continues_from_breakpoint_without_requery(tmp_path: Path) -> None:

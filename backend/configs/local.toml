@@ -24,9 +24,9 @@ quota_merchant_concurrency = 1
 failure_retry_attempts = 2
 failure_retry_delay_seconds = 1.0
 
-# 单 worker 单任务工具调用上限（specs/009 FR-9，超限收束属 US4/T020 实施）。
-# 定档 16（Ban 拍板 2026-11-23，p75~p95 区间）；校准依据见 settings.py 注释与
-# scripts/stats_tool_calls.py。
+# 单 worker 单任务工具调用上限（specs/009 FR-9）：claim 双记账 + investigate 循环
+# 达限收束（task.budget_exhausted 事件可查）；0 表示不启用。定档 16（Ban 拍板
+# 2026-11-23，p75~p95 区间）；校准依据见 settings.py 注释与 scripts/stats_tool_calls.py。
 investigation_tool_budget = 16
 
 # 混合检索（specs/006 US4）：pg_trgm 关键词路 + 向量路 RRF，零新增依赖。

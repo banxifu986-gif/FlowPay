@@ -154,6 +154,9 @@ class SharedTurn:
     task_progress: dict[str, SubtaskProgress] = field(default_factory=dict)
     # FR-9 单任务工具调用计数：键同 task_progress 的幂等键，轮内独立记账。
     task_tool_calls: dict[str, int] = field(default_factory=dict)
+    # FR-9 单任务工具调用上限：claim 双记账消费、investigate 循环达限收束
+    # （specs/009 US4）；0 表示不启用。默认同 settings 默认值 16。
+    investigation_tool_budget: int = 16
 
     def record_usage(self, completion: ChatCompletion) -> None:
         """登记一次直连模型调用的用量；不经 AgentTurn 的节点（route/plan/直答）使用。"""
@@ -197,21 +200,3 @@ class SubtaskProgress:
 def task_key(worker: str, objective: str) -> str:
     """幂等键 = worker 类型 + 任务目标；落盘与恢复用同一构造（specs/009 data-model）。"""
     return f"{worker}:{objective.casefold().strip()}"
-
-
-def merge_task_progress(
-    entries: list[SubtaskProgress],
-) -> dict[str, SubtaskProgress]:
-    """按幂等键合并多条增量进度；已收束条目不被未收束同名条目覆盖。
-
-    并行 worker 的落库顺序无保证（Send 分发），因此合并以 finished 为准：
-    只有 finished=True 的后写者可以替换已收束条目，未收束条目永不回退进度。
-    """
-    merged: dict[str, SubtaskProgress] = {}
-    for entry in entries:
-        current = merged.get(entry.key)
-        # 已收束条目只让位于后写的已收束条目（重放事件按序归一，后写快照更完整）；
-        # 未收束条目只回填尚无进度或同样未收束的键，永不覆盖已收束进度。
-        if current is None or entry.finished or not current.finished:
-            merged[entry.key] = entry
-    return merged

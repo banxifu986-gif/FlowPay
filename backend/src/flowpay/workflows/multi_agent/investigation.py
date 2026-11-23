@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from flowpay.core.agent import AgentTurn
 from flowpay.core.agent.turn import DISPUTE
 from flowpay.core.chat.projection import ContextPolicy, clip_text
-from flowpay.core.chat.record_ids import record_ids
+from flowpay.core.chat.record_ids import BUSINESS_RECORD_ID, record_ids
 from flowpay.core.data_sources.reader import SourceResult
 from flowpay.core.data_sources.tools import log_tool, sql_tool
 from flowpay.core.event_log.contracts import EventSink
@@ -487,6 +487,20 @@ class ResolvedResponse:
         }
 
 
+def audited_response(resolved: ResolvedResponse) -> ResolvedResponse:
+    """作答正文输出前的引用校验（specs/009 FR-6）：无标记断言句确定性降级。
+
+    模型作答与 FR-12 诚实占位共用此单一出口——占位正文原样嵌入 worker 报告，
+    报告里可能有无引用断言句，跳过校验会给 SC-5 的"覆盖率 100%"留下豁口
+    （2026-11-23 审查 I1）。clarify 正文是系统确定性拼接且伴随 pending（FR-7
+    拍板），不改写。
+    """
+    if resolved.waiting:
+        return resolved
+    audit = check_citations(resolved.text)
+    return replace(resolved, text=audit.text) if audit.downgraded else resolved
+
+
 def resolve_response(
     shared: SharedTurn,
     reports: list[WorkerReport],
@@ -501,12 +515,7 @@ def resolve_response(
     口径，纯本地解析零模型调用（降级优先，不触发定向重写）；clarify 正文是系统
     确定性拼接且伴随 pending（FR-7 拍板未证实口径仅约束无 pending 场景），不改写。
     """
-    resolved = _resolve_decision(shared, reports, completion, bound)
-    if not resolved.waiting:
-        audit = check_citations(resolved.text)
-        if audit.downgraded:
-            return replace(resolved, text=audit.text)
-    return resolved
+    return audited_response(_resolve_decision(shared, reports, completion, bound))
 
 
 def _resolve_decision(
@@ -572,12 +581,16 @@ def degraded_answer(reports: list[WorkerReport]) -> str:
     return "\n\n".join(blocks)
 
 
-def claim(shared: SharedTurn, tool: str, target: str) -> str | None:
+def claim(shared: SharedTurn, tool: str, target: str, task_key: str | None = None) -> str | None:
     """申领一次查询：获准返回 None 并记账，拒绝返回交回模型的说明。
 
     纯同步临界区：done 的查重、预算判断与记账之间没有任何 await，依赖单事件
     循环内同步代码的原子性；并行调查员调用本函数不会交错（R3）。done 跨轮保留，
     同一条件的同一查询在会话内只执行一次（FR-5）。
+
+    task_key 非空时按 FR-9 双记账（specs/009 data-model TaskBudget）：该任务的
+    调用计数随之递增；达限收束由 investigate 循环裁决，claim 不拒绝——第 N 次
+    调用（N=上限）照常执行，收束携带它的结论。去重命中与全局预算拒绝不记账。
     """
     key = f"{tool}:{target.casefold()}"
     if key in shared.done:
@@ -586,6 +599,8 @@ def claim(shared: SharedTurn, tool: str, target: str) -> str | None:
         return "工具预算已耗尽，请说明已知结论和限制。"
     shared.budget.spend_tool_call()
     shared.done.add(key)
+    if task_key is not None:
+        shared.task_tool_calls[task_key] = shared.task_tool_calls.get(task_key, 0) + 1
     return None
 
 
@@ -745,9 +760,15 @@ async def investigate(
 
     非取消的每个收束出口都登记子任务断点（specs/009 FR-4，收束口径含错误与
     预算收束）并写 turn.progress 事件。
+
+    FR-9 单任务预算收束（specs/009 US4）：本任务累计工具调用达到
+    shared.investigation_tool_budget（>0 时启用）即收束——发 task.budget_exhausted
+    （载荷幂等键/调用次数/上限，收束原因仅在事件可查，FR-7）、落断点、携带开工
+    基线切片的发现报告返回；全局预算余量不受影响。
     """
     baseline = len(shared.findings)
     budget = context_policy.report_char_budget if context_policy else 0
+    key = task_key(worker_name(worker), objective)
 
     async def persist_progress() -> None:
         """子任务收尾登记断点并发 turn.progress 事件（specs/009 FR-4）。
@@ -785,6 +806,20 @@ async def investigate(
                 # 追问正文由汇总节点按"已查到 + 仍需补充"组织（specs/007 FR-4）。
                 await persist_progress()
                 return {"reports": []}
+            if (
+                shared.investigation_tool_budget > 0
+                and shared.task_tool_calls.get(key, 0) >= shared.investigation_tool_budget
+            ):
+                await agent.runtime.tracer.emit(
+                    "task.budget_exhausted",
+                    {
+                        "key": key,
+                        "calls": shared.task_tool_calls[key],
+                        "limit": shared.investigation_tool_budget,
+                    },
+                )
+                await persist_progress()
+                return {"reports": [budget_report(shared, worker, baseline, budget)]}
             reply = await agent.think()
             if reply.is_answer:
                 shared.seen.update(agent.seen)
@@ -823,10 +858,12 @@ CAPABILITY_KEYWORDS: dict[CAPABILITY_KIND, tuple[str, ...]] = {
 def expected_kind(objective: str) -> CAPABILITY_KIND | None:
     """按静态能力表判断任务目标应属的调查员；无法判定时返回 None。
 
-    业务记录编号（pay_bg_001_0003 等）是最强信号，直接判 sql；文本关键词两类
-    同时命中或都不命中时返回 None，维持模型给的 kind——最小约束包不做题型矩阵。
+    业务记录编号（pay_bg_001_0003 等含纯数字段的词形）是最强信号，直接判 sql；
+    api_v2 这类字母段尾带数字的形态不算记录（BUSINESS_RECORD_ID 收窄，审查 M3
+    ——宽词形会把含它的文档任务误改派到 sql_worker）。文本关键词两类同时命中
+    或都不命中时返回 None，维持模型给的 kind——最小约束包不做题型矩阵。
     """
-    if record_ids(objective):
+    if BUSINESS_RECORD_ID.search(objective):
         return "sql"
     lowered = objective.casefold()
     hits: set[CAPABILITY_KIND] = {
@@ -979,6 +1016,9 @@ def sql_worker_node(
     """业务数据调查员：SQL 与日志工具加追问通道；需要装配数据源策略。"""
 
     async def node(state: GraphState) -> NodeOutput:
+        objective = state["tasks"][0].objective
+        # FR-9 双记账键：与 investigate 收束裁决、断点落盘用同一构造。
+        key = task_key(worker_name("sql"), objective)
         agent = AgentTurn.start(
             TurnInput(state["user_message"], [], {}, resumed=False),
             runtime,
@@ -990,13 +1030,13 @@ def sql_worker_node(
         )
         if note := turn_briefing(shared, case_note):
             agent.messages.add_system_message(note)
-        agent.messages.add_user_message(f"调查任务：{state['tasks'][0].objective}")
+        agent.messages.add_user_message(f"调查任务：{objective}")
 
         async def run_sql(source: str, scope: JsonObject, filters: JsonObject) -> SourceResult:
             """业务关系查询；去重与记账走共享 claim，链路守卫见 check_chain/guarded_call。"""
             check_chain(shared, f"sql:{source}")
             target = " ".join(f"{k}={v}" for k, v in sorted({**scope, **filters}.items()))
-            if refused := claim(shared, source, target):
+            if refused := claim(shared, source, target, key):
                 raise ToolInputError(refused)
             result = await guarded_call(
                 shared,
@@ -1020,7 +1060,7 @@ def sql_worker_node(
             check_chain(shared, "logs")
             conditions = {**(filters or {}), "start": start or "", "end": end or ""}
             target = " ".join(f"{k}={v}" for k, v in sorted(conditions.items()) if v)
-            if refused := claim(shared, source, target):
+            if refused := claim(shared, source, target, key):
                 raise ToolInputError(refused)
             result = await guarded_call(
                 shared,
@@ -1062,7 +1102,7 @@ def sql_worker_node(
             agent,
             shared,
             "sql",
-            state["tasks"][0].objective,
+            objective,
             context_policy,
             stop=lambda: clarifier.asked,
         )
@@ -1081,6 +1121,9 @@ def doc_worker_node(
     """文档调查员：检索与整篇读回，片段登记进共享引用池供跨节点引用。"""
 
     async def node(state: GraphState) -> NodeOutput:
+        objective = state["tasks"][0].objective
+        # FR-9 双记账键：与 investigate 收束裁决、断点落盘用同一构造。
+        key = task_key(worker_name("docs"), objective)
         agent = AgentTurn.start(
             TurnInput(state["user_message"], [], {}, resumed=False),
             runtime,
@@ -1092,7 +1135,7 @@ def doc_worker_node(
         )
         if note := turn_briefing(shared, case_note):
             agent.messages.add_system_message(note)
-        agent.messages.add_user_message(f"调查任务：{state['tasks'][0].objective}")
+        agent.messages.add_user_message(f"调查任务：{objective}")
 
         async def search_documents(arguments: DocumentSearchArguments) -> DocumentSearchResult:
             """语义检索文档；已回答的主题值拼进查询，与业务查询共用同一份预算。"""
@@ -1104,7 +1147,7 @@ def doc_worker_node(
             # 多跳两段式（specs/009 US5）：本轮第一跳查得的记录编号也拼进查询——
             # findings 的 target/digest 加片段正文，排序去重保证同集合同文本（B4）。
             rewritten = query_with_findings(shared.findings, rewritten, shared.retrieved.all())
-            if refused := claim(shared, "search", rewritten):
+            if refused := claim(shared, "search", rewritten, key):
                 return DocumentSearchResult(query, [], refused)
             hits = shared.retrieved.add(
                 await guarded_call(
@@ -1126,7 +1169,7 @@ def doc_worker_node(
             """整篇读回一份文档。"""
             doc_id = arguments.doc_id
             check_chain(shared, "read")
-            if refused := claim(shared, "read", doc_id):
+            if refused := claim(shared, "read", doc_id, key):
                 return DocumentReadResult(doc_id, [], refused)
             passages = shared.retrieved.add(
                 await guarded_call(
@@ -1142,7 +1185,7 @@ def doc_worker_node(
             )
 
         agent.offer(document_search_tool(search_documents), document_read_tool(read_document))
-        return await investigate(agent, shared, "docs", state["tasks"][0].objective, context_policy)
+        return await investigate(agent, shared, "docs", objective, context_policy)
 
     return node
 
@@ -1232,12 +1275,14 @@ def synthesize_node(
                     shared, state["reports"], completion, runtime.scope_overrides
                 )
             except ModelOutputError:
-                return ResolvedResponse(
-                    text=degraded_answer(state["reports"]),
-                    waiting=False,
-                    mode="answer",
-                    source="fallback",
-                    has_reports=bool(state["reports"]),
+                return audited_response(
+                    ResolvedResponse(
+                        text=degraded_answer(state["reports"]),
+                        waiting=False,
+                        mode="answer",
+                        source="fallback",
+                        has_reports=bool(state["reports"]),
+                    )
                 )
 
         resolved = await decide()

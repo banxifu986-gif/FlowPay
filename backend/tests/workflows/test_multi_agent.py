@@ -48,15 +48,34 @@ def make_manager(
     max_concurrency: int | None = None,
     sources: DataSources | None = None,
     policy: ContextPolicy | None = None,
+    investigation_tool_budget: int = 16,
 ) -> tuple[SessionManager, RuntimeResources]:
     """真实运行时装配 + 受控模型；与 test_manual_loop 同一套夹具口径。"""
     settings = Settings(
         tmp_path, tmp_path, workflow="multi-agent", knowledge_collection_id="fixture"
     )
     resources = RuntimeResources(settings, sources=sources, retriever=search.for_run)
-    workflow = MultiAgentWorkflow(model, retrieval_input, policy, max_concurrency=max_concurrency)
+    workflow = MultiAgentWorkflow(
+        model,
+        retrieval_input,
+        policy,
+        max_concurrency=max_concurrency,
+        investigation_tool_budget=investigation_tool_budget,
+    )
     manager = SessionManager(EventStore(tmp_path / "events.sqlite"), workflow, settings, resources)
     return manager, resources
+
+
+def test_create_stage_forwards_investigation_tool_budget() -> None:
+    """FR-9 配置接线：create_stage 把单任务预算上限传给 multi-agent 阶段。"""
+    from flowpay.router import create_stage
+
+    # Protocol 不暴露实现字段（test_agent_loop 同口径）：断言前收口实现类型。
+    workflow = cast(
+        MultiAgentWorkflow,
+        create_stage("multi-agent", Model(), retrieval_input, investigation_tool_budget=7),
+    )
+    assert workflow.investigation_tool_budget == 7
 
 
 async def say(manager: SessionManager, sid: str, request_id: str, text: str) -> None:

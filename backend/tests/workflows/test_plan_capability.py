@@ -18,6 +18,11 @@ def test_expected_kind_by_record_id() -> None:
     assert expected_kind("查支付 pay_bg_001_0003 的状态") == "sql"
 
 
+def test_expected_kind_requires_numeric_segment_in_record_ids() -> None:
+    """能力判定只认含纯数字段的记录词形：api_v2 这类形态不强判 sql（审查 M3）。"""
+    assert expected_kind("说明 api_v2 的行为") is None
+
+
 def test_expected_kind_by_business_terms() -> None:
     """业务记录关键词命中即判 sql；规则/文档关键词命中即判 docs。"""
     assert expected_kind("查明这笔支付有没有触发 Webhook 投递") == "sql"

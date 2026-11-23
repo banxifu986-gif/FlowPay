@@ -93,7 +93,8 @@ class Settings:
     # 可重试失败（超时/限流/模型 5xx）的额外尝试数与线性退避基数。
     failure_retry_attempts: int = 2
     failure_retry_delay_seconds: float = 1.0
-    # 单 worker 单任务工具调用上限（specs/009 FR-9/T008，超限收束属 US4/T020 实施）。
+    # 单 worker 单任务工具调用上限（specs/009 FR-9/T008）：claim 双记账 +
+    # investigate 循环达限收束（task.budget_exhausted 事件可查）；0 表示不启用。
     # 定档依据（Ban 拍板 2026-11-23）：scripts/stats_tool_calls.py 对 R96B 事件库的
     # 校准为单任务均值口径 p50=11 / p95=15.5 / max=23（单轮口径 max=40，全局 Budget
     # 封顶 12+3n）——默认 16 取 p75~p95 区间，不误伤正常调查（原 10 低于中位数），

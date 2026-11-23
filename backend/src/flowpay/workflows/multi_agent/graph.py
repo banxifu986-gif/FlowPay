@@ -90,6 +90,19 @@ def fold_finding_record_ids(shared: SharedTurn) -> None:
         shared.seen.update(record_ids(finding.target))
 
 
+def injected_progress(state: JsonObject) -> list[object]:
+    """恢复注入的 task_progress 容器；形状损坏按空处理，不让坏载荷阻断续跑。
+
+    条目级损坏由 SubtaskProgress.restore 按 None 跳过（specs/009 data-model 容忍
+    口径）；容器本身损坏同样只损失断点过滤，不抛错打断恢复（2026-11-23 审查 M5，
+    与 ClarificationState.restore 的容忍先例一致）。
+    """
+    try:
+        return require_list(state.get("task_progress") or [])
+    except ValueError:
+        return []
+
+
 def dispatch(state: GraphState) -> list[Send] | str:
     """plan 之后的条件边：每个子任务经 Send 分发给对应调查员并行执行；没有任务直接进汇总。
 
@@ -99,7 +112,7 @@ def dispatch(state: GraphState) -> list[Send] | str:
     """
     finished = {
         progress.key
-        for raw in require_list(state["saved_state"].get("task_progress") or [])
+        for raw in injected_progress(state["saved_state"])
         if (progress := SubtaskProgress.restore(raw)) is not None and progress.finished
     }
     sends: list[Send] = []
@@ -202,13 +215,19 @@ class MultiAgentWorkflow:
         context_policy: ContextPolicy | None = None,
         memory_policy: MemoryPolicy | None = None,
         max_concurrency: int | None = None,
+        investigation_tool_budget: int = 16,
     ) -> None:
-        """接收已装配的模型与查询格式函数；max_concurrency 仅测试用（串行化 Send）。"""
+        """接收已装配的模型与查询格式函数；max_concurrency 仅测试用（串行化 Send）。
+
+        investigation_tool_budget 是单任务工具调用上限（specs/009 FR-9，默认同
+        settings 默认值 16）；0 表示不启用单任务收束。
+        """
         self.model: ChatModel = model
         self.prepare_query: Callable[[str], str] = prepare_query
         self.context_policy: ContextPolicy | None = context_policy
         self.memory_policy: MemoryPolicy | None = memory_policy
         self.max_concurrency: int | None = max_concurrency
+        self.investigation_tool_budget: int = investigation_tool_budget
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
         """一轮 = 恢复跨轮状态 → 图状态进出 → 组装新检查点。"""
@@ -223,11 +242,12 @@ class MultiAgentWorkflow:
             findings=restore_findings(turn.saved_state.get("findings")),
             retrieved=retrieved,
             clarification=ClarificationState.restore(turn.saved_state.get("clarification")),
+            investigation_tool_budget=self.investigation_tool_budget,
         )
         # FR-4 恢复预填：manager 注入的 task_progress（已按幂等键合并的 turn.progress
         # 载荷）重建已完成子任务的查询键、发现与证据引用池——workflow 不读事件库
         # （审查 C2），预填只在恢复轮发生（注入方只对 resume 写入该键）。
-        for raw in require_list(turn.saved_state.get("task_progress") or []):
+        for raw in injected_progress(turn.saved_state):
             progress = SubtaskProgress.restore(raw)
             if progress is None:
                 continue
