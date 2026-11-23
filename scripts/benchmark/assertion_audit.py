@@ -93,7 +93,9 @@ class CoreVerifier:
     def __init__(self) -> None:
         from flowpay.core.config import load_settings
 
-        settings = load_settings()
+        # 配置路径显式指向仓库根的 backend/configs/local.toml（checks.py 先例）；
+        # load_settings() 的默认相对路径在脚本进程的 cwd 下不成立。
+        settings = load_settings(ROOT / "backend/configs/local.toml")
         chat_model: ChatModel = (
             OpenAiResponsesModel(settings.model)
             if settings.model.protocol == "responses"
