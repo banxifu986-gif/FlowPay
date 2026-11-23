@@ -546,10 +546,15 @@ class FixtureVerifier:
         self.fixture: Mapping[str, list[FixtureOverride]] = fixture or {}
 
     async def audit(self, request: AuditInput) -> tuple[AssertionVerdict, ...]:
-        """对 gate 输入逐句判定；无断言句返回空（零断言放行路径）。"""
+        """对 gate 输入逐句判定；无断言句返回空（零断言放行路径）。
+
+        句子剥掉切分残留的前导空白后再进判定与 JSONL——与在线 gate 的锚点
+        口径一致（assertion.text 是句子正文）。
+        """
         passage_ids = {passage.id for passage in request.passages}
         verdicts: list[AssertionVerdict] = []
-        for sentence in split_sentences(request.text):
+        for raw in split_sentences(request.text):
+            sentence = raw.strip()
             if not has_citation(sentence) or not is_assertion(sentence):
                 continue
             assertion = Assertion(
