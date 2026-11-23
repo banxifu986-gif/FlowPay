@@ -96,10 +96,12 @@ def select_assertions(text: str) -> list[str]:
     """句级筛选：带引用标记的断言句集合；已带"未能核实"口径句天然豁免。
 
     口径与回放侧一致（citation_check 的 is_assertion 豁免形态）；纯操作指引、
-    客套话（无线索词）不进校验（spec 边界：零断言放行不降级）。
+    客套话（无线索词）不进校验（spec 边界：零断言放行不降级）。切句残留在句
+    首的换行/空白一并剥掉：锚点语义是"句子正文"，处置回填按剥空后的句子
+    等值匹配，前导空白回填时原样保留。
     """
     return [
-        sentence
+        sentence.strip()
         for sentence in split_sentences(text)
         if has_citation(sentence) and is_assertion(sentence)
     ]
@@ -125,8 +127,10 @@ def replacement_of(action: AssertionAction) -> str | None:
 def apply_actions(text: str, actions: Sequence[AssertionAction]) -> str:
     """把处置动作按句锚点回填原文：句级等值匹配，命中多处取第一处。
 
-    锚点失配（校验器输出与 gate 筛选不一致的边缘）时该句原样保留——替换错位
-    是安全事故，放行错位句是可观测的小损失（research D5 安全侧）。
+    锚点按句子正文（剥空）比对；句首的换行/空白不是正文，回填时保留在替换
+    文本之前，版式不因校验改变。锚点失配（校验器输出与 gate 筛选不一致的
+    边缘）时该句原样保留——替换错位是安全事故，放行错位句是可观测的小损失
+    （research D5 安全侧）。
     """
     if not actions:
         return text
@@ -137,7 +141,15 @@ def apply_actions(text: str, actions: Sequence[AssertionAction]) -> str:
             replacements[action.sentence] = replacement
     if not replacements:
         return text
-    return "".join(replacements.get(sentence, sentence) for sentence in split_sentences(text))
+    rebuilt: list[str] = []
+    for sentence in split_sentences(text):
+        replacement = replacements.get(sentence.strip())
+        if replacement is None:
+            rebuilt.append(sentence)
+            continue
+        leading = sentence[: len(sentence) - len(sentence.lstrip())]
+        rebuilt.append(f"{leading}{replacement}")
+    return "".join(rebuilt)
 
 
 def audit_payload(audit: AssertionAudit) -> JsonObject:
@@ -204,6 +216,11 @@ async def gate_response(
         await tracer.emit(AUDIT_EVENT, audit_payload(audit))
         return text
     assertions = select_assertions(text)
+    if not assertions:
+        # 零断言放行（spec 边界）：纯指引/客套/已带未证实口径的作答跳过校验，
+        # 不发生校验器调用，事件按零判定记录（每次校验后落事件）。
+        await tracer.emit(AUDIT_EVENT, audit_payload(AssertionAudit(text=text)))
+        return text
     try:
         audit = await gate.auditor.audit("\n".join(assertions), question, passages)
     except Exception:  # noqa: BLE001 - 校验器故障 fail-open，不上抛（FR-6）
