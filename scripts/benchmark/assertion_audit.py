@@ -47,6 +47,7 @@ from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
 from flowpay.core.llm.chat.openai_responses import OpenAiResponsesModel
 from flowpay.core.verify import (
     Assertion,
+    AssertionAudit,
     AssertionVerdict,
     Conflict,
     Overreach,
@@ -104,10 +105,10 @@ class CoreVerifier:
         self._chat: ChatClient = ChatClient(chat_model, _NullSink())
         self._budget: int = settings.assertion_audit_evidence_budget
 
-    async def audit(self, request: AuditInput) -> tuple[AssertionVerdict, ...]:
+    async def audit(self, request: AuditInput) -> AssertionAudit:
         from flowpay.core.verify.errors import audit_response
 
-        audit = await audit_response(
+        return await audit_response(
             self._chat,
             text=request.text,
             question=request.question,
@@ -115,7 +116,6 @@ class CoreVerifier:
             record_excerpts=request.records,
             evidence_budget=self._budget,
         )
-        return audit.verdicts
 
 
 def core_verifier() -> CoreVerifier:
@@ -389,7 +389,7 @@ class ReplayVerifier(Protocol):
     fixture 桩只验证回放机制（SC-4 的机制预演），判定不是语义结论。
     """
 
-    async def audit(self, request: AuditInput) -> tuple[AssertionVerdict, ...]: ...
+    async def audit(self, request: AuditInput) -> AssertionAudit: ...
 
 
 @dataclass(frozen=True)
@@ -634,7 +634,7 @@ class FixtureVerifier:
         """绑定可选的逐题判定覆写。"""
         self.fixture: Mapping[str, list[FixtureOverride]] = fixture or {}
 
-    async def audit(self, request: AuditInput) -> tuple[AssertionVerdict, ...]:
+    async def audit(self, request: AuditInput) -> AssertionAudit:
         """对 gate 输入逐句判定；无断言句返回空（零断言放行路径）。
 
         句子剥掉切分残留的前导空白后再进判定与 JSONL——与在线 gate 的锚点
@@ -661,7 +661,7 @@ class FixtureVerifier:
                     self.fixture,
                 )
             )
-        return tuple(verdicts)
+        return AssertionAudit(verdicts=tuple(verdicts))
 
     def _judge(
         self,
@@ -764,6 +764,7 @@ class AuditRow:
     deviations: tuple[str, ...]
     required: tuple[str, ...] = ()
     breakpoints: tuple[BreakpointEntry, ...] = ()
+    fail_open: bool = False
 
 
 async def audit_case(
@@ -778,8 +779,9 @@ async def audit_case(
     与题库期望证据（expected）合成四类断点的判定输入。
     """
     verdicts: tuple[AssertionVerdict, ...] = ()
+    audit_fail_open = False
     if case.draft is not None:
-        verdicts = await verifier.audit(
+        audit = await verifier.audit(
             AuditInput(
                 text=case.text,
                 question=case.question,
@@ -788,6 +790,8 @@ async def audit_case(
                 question_id=case.question_id,
             )
         )
+        verdicts = audit.verdicts
+        audit_fail_open = audit.fail_open
     passage_headings, ref_headings = passage_headings_of(case.passages)
     context = BreakpointContext(
         passage_headings=passage_headings,
@@ -809,6 +813,7 @@ async def audit_case(
             *(f"invented:{name}" for name in check_invented(case)),
         ),
         required=tuple(required),
+        fail_open=audit_fail_open,
     )
     return replace(row, breakpoints=tuple(breakpoint_entries(row, context)))
 
@@ -1101,6 +1106,7 @@ def write_verdicts(path: Path, rows: Sequence[AuditRow]) -> None:
                     "evidence_pass": row.evidence_pass,
                     "session_id": row.session_id,
                     "branch": row.branch,
+                    "fail_open": row.fail_open,
                     "deviations": list(row.deviations),
                     "required": list(row.required),
                     "verdicts": [verdict_payload(verdict) for verdict in row.verdicts],

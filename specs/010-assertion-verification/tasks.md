@@ -61,7 +61,7 @@
 - [x] T027 [P1-3] gate 单点移到编造核对 DISPUTE 收敛之后：重试作答同样过校验，堵重试路径零校验发布与首答判定事件/发布文本错位（回放草稿=DISPUTE 终态，同构口径恢复）；DISPUTE+gate 组合回归
 - [x] T028 [P2] P2-1 事件 text 以发布文本为准（候选句拼接≠发布，audit_payload 覆写入参）；P2-3 契约死字段删除（`breakpoint_hint`/`conflict_details`——conflict 随 verdicts 条目内联为唯一载荷出口，schema/data-model 同步）；P2-4 gate 删本地 apply_actions 统一 core 版（首处替换+列表前缀容忍，D5 口径归一）；P2-7 quickstart 冒烟改 `--questions` 12 题单（`--sample 12` 实为 72 题）
 - [x] T029 [P2-2/2-5/2-6] 记录为已知债，不在本轮清偿：句级切分双实现与五处词面复制（涉 009 既有 citation_check 代码，未经允许不动）→ 交付报告披露；多轮回放证据池=会话最终池≠在线当轮池（单轮无影响，全量回放定性后决定是否立项）
-- [ ] T030 T019 冒烟 12 题（清偿后 GO）：真校验器回放 + SC-4 报告（三类断点≥1例/类+矛盾档+通过题误伤样例）
+- [x] T030 T019 冒烟 12 题（清偿后 GO）：真校验器回放两轮（第一轮 1 次 JSONDecodeError→fail-open 定性为模型随机抖动；第二轮零 fail-open）+ SC-4 报告（断点 绑错20/越界6/没召回6/矛盾0；误伤 0/3 必需断言）+ fail_open 观测透传（JSONL 列）；SM-0005 首轮空判定由此定性，非恢复层缺口
 
 ## 依赖与并行
 

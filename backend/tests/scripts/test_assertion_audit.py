@@ -307,7 +307,7 @@ async def test_fixture_verifier_word_and_id_rules() -> None:
             records={},
         )
     )
-    assert [v.verdict for v in supported] == ["supported"]
+    assert [v.verdict for v in supported.verdicts] == ["supported"]
     missing = await verifier.audit(
         AuditInput(
             text="FP-4041 的含义是错误码，见 [doc:KB-404#c009]。",
@@ -316,8 +316,8 @@ async def test_fixture_verifier_word_and_id_rules() -> None:
             records={"pay_x01": "payment_id=pay_x01"},
         )
     )
-    assert [v.verdict for v in missing] == ["insufficient"]
-    assert missing[0].assertion.refs == ("doc:KB-404#c009",)
+    assert [v.verdict for v in missing.verdicts] == ["insufficient"]
+    assert missing.verdicts[0].assertion.refs == ("doc:KB-404#c009",)
 
 
 async def test_fixture_verifier_record_missing_is_insufficient() -> None:
@@ -331,8 +331,8 @@ async def test_fixture_verifier_record_missing_is_insufficient() -> None:
             records={},
         )
     )
-    assert [v.verdict for v in verdicts] == ["insufficient"]
-    assert verdicts[0].assertion.record_ids == ("pay_y01",)
+    assert [v.verdict for v in verdicts.verdicts] == ["insufficient"]
+    assert verdicts.verdicts[0].assertion.record_ids == ("pay_y01",)
 
 
 async def test_fixture_override_replaces_word_rule(tmp_path: Path) -> None:
@@ -362,9 +362,10 @@ async def test_fixture_override_replaces_word_rule(tmp_path: Path) -> None:
             question_id="FP-BM-SR-0001",
         )
     )
-    assert verdicts[0].verdict == "partial"
-    assert verdicts[0].overreach is not None and verdicts[0].overreach.dimension == "对象"
-    assert verdicts[0].revision == "FP-4041 在生产环境表示"
+    first = verdicts.verdicts[0]
+    assert first.verdict == "partial"
+    assert first.overreach is not None and first.overreach.dimension == "对象"
+    assert verdicts.verdicts[0].revision == "FP-4041 在生产环境表示"
     # 未命中的断言仍走词面规则。
     other = await verifier.audit(
         AuditInput(
@@ -375,7 +376,7 @@ async def test_fixture_override_replaces_word_rule(tmp_path: Path) -> None:
             question_id="FP-BM-OTHER",
         )
     )
-    assert other[0].verdict == "supported"
+    assert other.verdicts[0].verdict == "supported"
 
 
 def write_override(path: Path, payload: JsonObject) -> Path:
