@@ -70,11 +70,7 @@
             "enum": ["keep", "replace", "downgrade"],
             "description": "keep=放行；replace=替换为 revision（须过子集校验，越界降级）；downgrade=未能核实降级"
           },
-          "revision": { "type": ["string", "null"], "description": "replace 动作的替换文本" },
-          "breakpoint_hint": {
-            "type": ["string", "null"],
-            "description": "评测侧断点提示（overreach/not_recalled/mis_bound/contradicted），仅供回放归类参考，生产侧可忽略"
-          }
+          "revision": { "type": ["string", "null"], "description": "replace 动作的替换文本" }
         }
       }
     },

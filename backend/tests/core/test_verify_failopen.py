@@ -91,8 +91,8 @@ async def test_audit_blank_text_short_circuits() -> None:
     assert audit.text == "  " and audit.verdicts == () and model.requests == []
 
 
-async def test_audit_contradicted_carries_conflict_details() -> None:
-    """矛盾判定：降级处置 + conflict 详情进 conflict_details（D10）。"""
+async def test_audit_contradicted_carries_conflict_on_verdict() -> None:
+    """矛盾判定：降级处置 + conflict 详情随 verdicts 条目内联（D10 载荷口径）。"""
     verdict_payload = {
         "verdicts": [
             {
@@ -107,7 +107,8 @@ async def test_audit_contradicted_carries_conflict_details() -> None:
         chat, text=DRAFT, question="?", passages=ROUNDS, record_excerpts={}, evidence_budget=8000
     )
     assert [a.action for a in audit.actions] == ["downgrade"]
-    assert audit.conflict_details[0].point == "原文与表述冲突"
+    assert audit.verdicts[0].conflict is not None
+    assert audit.verdicts[0].conflict.point == "原文与表述冲突"
 
 
 @pytest.mark.parametrize(

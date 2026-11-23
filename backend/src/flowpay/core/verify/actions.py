@@ -72,7 +72,7 @@ def map_actions(
         if DOWNGRADE_MARK in sentence:
             # 幂等：处置后文本再过校验器不二次改写。
             actions.append(
-                AssertionAction(sentence=sentence, action="keep", breakpoint_hint=_hint(item))
+                AssertionAction(sentence=sentence, action="keep")
             )
             continue
         if (
@@ -89,7 +89,6 @@ def map_actions(
                     sentence=sentence,
                     action="replace",
                     revision=item.revision,
-                    breakpoint_hint=_hint(item),
                 )
             )
             continue
@@ -98,7 +97,6 @@ def map_actions(
                 sentence=sentence,
                 action="downgrade",
                 revision=downgrade_text(sentence),
-                breakpoint_hint=_hint(item),
             )
         )
     return tuple(actions)
@@ -144,15 +142,6 @@ def _body(sentence: str) -> str:
 def _locatable(sentence: str, text: str) -> bool:
     """句级等值匹配（D5）：锚点（或其去前缀正文）整句出现在待校验文本里。"""
     return _body(sentence) in {_body(s) for s in split_sentences(text)}
-
-
-def _hint(item: AssertionVerdict) -> str | None:
-    """处置动作的断点提示：越界与矛盾生产侧可见，证据不足留给回放归类。"""
-    if item.verdict == "partial":
-        return "overreach"
-    if item.verdict == "contradicted":
-        return "contradicted"
-    return None
 
 
 def _bound_corpus(

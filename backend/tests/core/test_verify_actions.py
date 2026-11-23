@@ -65,7 +65,6 @@ def test_partial_replaces_with_revision_in_place() -> None:
     revision = "企业版工单通常 5 个工作日响应 [KB-TS-012#c001]。"
     (action,) = map_actions((verdict("partial", sentence, revision=revision),), bundle(), EXCERPTS)
     assert action.action == "replace" and action.revision == revision
-    assert action.breakpoint_hint == "overreach"
     applied = apply_actions(DRAFT, (action,))
     assert applied.startswith(revision)
     assert "- 退款已提交 pay_bg_001_0003。" in applied
@@ -112,7 +111,7 @@ def test_partial_without_revision_downgrades() -> None:
     """部分支持缺收紧表述：不收紧只降级（FR-4 防线）。"""
     sentence = "企业版所有用户最多等 5 天 [KB-TS-012#c001]。"
     (action,) = map_actions((verdict("partial", sentence),), bundle(), EXCERPTS)
-    assert action.action == "downgrade" and action.breakpoint_hint == "overreach"
+    assert action.action == "downgrade"
 
 
 def test_match_failure_downgrades_instead_of_replace() -> None:
@@ -150,7 +149,7 @@ def test_contradicted_downgrades_and_keeps_hint() -> None:
         bundle(),
         EXCERPTS,
     )
-    assert action.action == "downgrade" and action.breakpoint_hint == "contradicted"
+    assert action.action == "downgrade"
     assert action.revision == "未能核实：退款已提交 pay_bg_001_0003。"
 
 

@@ -7,7 +7,7 @@ plan.md 分层接线。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 # 四档判定：支持 / 部分支持 / 矛盾 / 证据不足。
@@ -74,14 +74,12 @@ class AssertionAction:
     """一条处置动作。
 
     sentence 是被处置的原句全文（句级等值匹配锚点，防错位替换）；replace
-    在消费侧还要过数字/编号子集校验，越界降级。breakpoint_hint 仅供评测侧
-    断点归类参考，生产路径忽略。
+    在消费侧还要过数字/编号子集校验，越界降级。
     """
 
     sentence: str
     action: ActionKind
     revision: str | None = None
-    breakpoint_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,11 +89,11 @@ class AssertionAudit:
     fail_open=True 时（调用失败/解析失败/装配异常/预算耗尽）actions 为空、
     text 等于输入原文——校验器故障永不阻断回答、不产生 run.failed
     （spec FR-6）。verdicts 为空表示无断言放行；处置幂等：处置后文本再过
-    校验器不二次改写。
+    校验器不二次改写。矛盾分歧详情随 verdicts 条目内 conflict 携带
+    （D10：事件载荷内联，不另设汇总字段）。
     """
 
     verdicts: tuple[AssertionVerdict, ...] = ()
     actions: tuple[AssertionAction, ...] = ()
     fail_open: bool = False
     text: str = ""
-    conflict_details: tuple[Conflict, ...] = field(default_factory=tuple)

@@ -68,9 +68,6 @@ async def audit_response(
             actions=actions,
             fail_open=False,
             text=apply_actions(text, actions),
-            conflict_details=tuple(
-                item.conflict for item in verification.verdicts if item.conflict is not None
-            ),
         )
     except Exception:
         logger.exception("Assertion audit failed; fail-open with the original text")

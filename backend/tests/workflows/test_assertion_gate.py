@@ -26,11 +26,11 @@ from flowpay.core.verify import (
     Conflict,
     Overreach,
 )
+from flowpay.core.verify.actions import apply_actions
 from flowpay.workflows.multi_agent.assertion_gate import (
     AUDIT_EVENT,
     AssertionAuditor,
     AssertionGate,
-    apply_actions,
     gate_from_settings,
     gate_response,
     select_assertions,

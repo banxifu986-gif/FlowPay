@@ -22,12 +22,16 @@ cd backend && uv sync
 ## 3. 冒烟回放（合并后主仓，B3）
 
 ```bash
-.venv/Scripts/python.exe scripts/benchmark/assertion_audit.py \
+set -a; . ./.env; set +a
+backend/.venv/Scripts/python.exe scripts/benchmark/assertion_audit.py \
   --arm var/benchmark/20261122-200707-6010b8 \
-  --sample 12 --report specs/010-assertion-verification/smoke-report.md
+  --questions FP-BM-SR-0001 FP-BM-MD-0022 FP-BM-MD-0062 FP-BM-SR-0061 FP-BM-MD-0030 FP-BM-MD-0042 \
+              FP-BM-MD-0018 FP-BM-SR-0021 FP-BM-MS-0008 FP-BM-SR-0005 FP-BM-SR-0009 FP-BM-SR-0013 \
+  --report specs/010-assertion-verification/smoke \
+  --verifier scripts.benchmark.assertion_audit:core_verifier
 ```
 
-前置：009 验收臂事件库在本机（`var/benchmark/20261122-200707-6010b8`）；API Key 走环境变量（`.env`，不进配置快照与日志）。期望产出：12 题逐断言判定 JSONL + 三类断点（没召回/绑错/表述越界）至少各 1 例 + 矛盾档 + 通过题误伤样例（SC-4）。费用 ≈ 24 次校验调用（12 题 × 2），属冒烟量级。
+前置：009 验收臂事件库在本机（`var/benchmark/20261122-200707-6010b8`）；API Key 走环境变量（`.env`，不进配置快照与日志）。题单（审查 P2-7：`--sample 12` 是"每题型前 12 道"=72 题，不是 12 题——冒烟口径用显式题单）：没召回嫌疑（evidence_miss）×3、表述越界嫌疑（conclusion_wrong）×3、绑错嫌疑×3、通过题×3，题号来自 009 attribution 报告。期望产出：12 题逐断言判定 JSONL + 三类断点（没召回/绑错/表述越界）至少各 1 例 + 矛盾档 + 通过题误伤样例（SC-4）。费用 ≈ 24 次校验调用（12 题 × 2），属冒烟量级。
 
 ## 4. 全量回放与开启态评测臂（B4，Ban 批准后）
 

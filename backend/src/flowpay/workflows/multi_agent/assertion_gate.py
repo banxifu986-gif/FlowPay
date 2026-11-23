@@ -25,14 +25,9 @@ from flowpay.core.verify import (
     AssertionAudit,
     AssertionVerdict,
 )
+from flowpay.core.verify.actions import apply_actions
 
-from .citation_check import (
-    BULLET_PREFIX,
-    UNVERIFIED_MARK,
-    has_citation,
-    is_assertion,
-    split_sentences,
-)
+from .citation_check import has_citation, is_assertion, split_sentences
 
 # 事件类型名（specs/010 data-model）：判定清单、处置动作、fail_open 与矛盾
 # 分歧详情（verdicts 条目内 conflict 字段）一次携带。
@@ -113,58 +108,18 @@ def select_assertions(text: str) -> list[str]:
     ]
 
 
-def downgrade_text(sentence: str) -> str:
-    """降级文本：与 citation_check.downgrade 同一口径（bullet 前缀原样保留）。"""
-    bullet = BULLET_PREFIX.match(sentence)
-    prefix = bullet.group(0) if bullet else ""
-    body = sentence[len(prefix) :] if prefix else sentence
-    return f"{prefix}{UNVERIFIED_MARK}：{body}"
+def audit_payload(audit: AssertionAudit, *, text: str | None = None) -> JsonObject:
+    """AssertionAudit → assertion.audit 载荷（verdict-schema 同构）。
 
-
-def replacement_of(action: AssertionAction) -> str | None:
-    """动作的替换文本：keep 不替换；replace 用 revision（缺失降级兜底）；downgrade 统一口径。"""
-    if action.action == "keep":
-        return None
-    if action.action == "replace":
-        return action.revision or downgrade_text(action.sentence)
-    return downgrade_text(action.sentence)
-
-
-def apply_actions(text: str, actions: Sequence[AssertionAction]) -> str:
-    """把处置动作按句锚点回填原文：句级等值匹配，命中多处取第一处。
-
-    锚点按句子正文（剥空）比对；句首的换行/空白不是正文，回填时保留在替换
-    文本之前，版式不因校验改变。锚点失配（校验器输出与 gate 筛选不一致的
-    边缘）时该句原样保留——替换错位是安全事故，放行错位句是可观测的小损失
-    （research D5 安全侧）。
+    text 覆写（审查 P2-1）：事件里的 text 语义是"发布的最终文本"——auditor
+    返回的 audit.text 基于 gate 送入的候选句拼接，与发布文本不同形，一律以
+    gate_response 的发布文本为准。
     """
-    if not actions:
-        return text
-    replacements: dict[str, str] = {}
-    for action in actions:
-        replacement = replacement_of(action)
-        if replacement is not None and action.sentence not in replacements:
-            replacements[action.sentence] = replacement
-    if not replacements:
-        return text
-    rebuilt: list[str] = []
-    for sentence in split_sentences(text):
-        replacement = replacements.get(sentence.strip())
-        if replacement is None:
-            rebuilt.append(sentence)
-            continue
-        leading = sentence[: len(sentence) - len(sentence.lstrip())]
-        rebuilt.append(f"{leading}{replacement}")
-    return "".join(rebuilt)
-
-
-def audit_payload(audit: AssertionAudit) -> JsonObject:
-    """AssertionAudit → assertion.audit 载荷（verdict-schema 同构）。"""
     return {
         "verdicts": [verdict_payload(verdict) for verdict in audit.verdicts],
         "actions": [action_payload(action) for action in audit.actions],
         "fail_open": audit.fail_open,
-        "text": audit.text,
+        "text": text if text is not None else audit.text,
     }
 
 
@@ -233,7 +188,6 @@ async def gate_response(
         )
     except Exception:  # noqa: BLE001 - 校验器故障 fail-open，不上抛（FR-6）
         audit = AssertionAudit(text=text, fail_open=True)
-    await tracer.emit(AUDIT_EVENT, audit_payload(audit))
-    if audit.fail_open:
-        return text
-    return apply_actions(text, audit.actions)
+    published = text if audit.fail_open else apply_actions(text, audit.actions)
+    await tracer.emit(AUDIT_EVENT, audit_payload(audit, text=published))
+    return published
