@@ -8,12 +8,13 @@ citation_check 同构、fixture 桩判定、逐题 JSONL 形态。全部本地 f
 import json
 import sqlite3
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from flowpay.core.event_log.types import Event
 from flowpay.core.json import JsonObject, parse_json, require_object
 from flowpay.core.knowledge.contracts import Passage, PassageSource
-from flowpay.core.verify import Assertion, AssertionVerdict
+from flowpay.core.verify import Assertion, AssertionVerdict, Verdict
 
 # scripts 不是 backend 安装包的一部分：宿主 pytest 单文件快跑需要仓库根在
 # sys.path（容器全量从仓库根跑时本就可 import，注入是幂等兜底）。
@@ -24,13 +25,19 @@ if str(ROOT) not in sys.path:
 from scripts.benchmark.assertion_audit import (  # noqa: E402
     AuditInput,
     AuditRow,
+    BreakpointContext,
+    ExpectedEvidence,
     FixtureVerifier,
     ReplayCase,
     audit_case,
+    breakpoint_entries,
+    breakpoint_summary,
+    classify_breakpoint,
     collateral_baseline,
     draft_of,
     load_fixture,
     match_sessions,
+    passage_headings_of,
     record_excerpts_of,
     replay_chain,
     required_assertions,
@@ -525,3 +532,104 @@ def test_required_assertions_from_case() -> None:
         },
     }
     assert required_assertions(blueprint) == ("断言一。", "断言二。")
+
+
+def verdict(text: str, verdict_kind: Verdict) -> AssertionVerdict:
+    """归类规则测试用的判定替身。"""
+    return AssertionVerdict(assertion=Assertion(text=text), verdict=verdict_kind)
+
+
+def breakpoint_context(expected: ExpectedEvidence | None = None) -> BreakpointContext:
+    """归类上下文替身：证据池已含"FP-4041 语义"小节 + 已见记录 pay_x01。"""
+    headings, ref_headings = passage_headings_of((passage(),))
+    return BreakpointContext(
+        passage_headings=headings,
+        seen_records=frozenset({"pay_x01"}),
+        ref_headings=ref_headings,
+        expected=expected,
+    )
+
+
+def test_classify_breakpoint_rules() -> None:
+    """四类断点规则逐条：partial/insufficient×召回×绑定/contradicted。"""
+    expected = ExpectedEvidence(
+        headings=frozenset({"FP-4041 语义"}), records=frozenset({"pay_x01"})
+    )
+    context = breakpoint_context(expected)
+    assert classify_breakpoint(verdict("句", "partial"), context) == (
+        "overreach",
+        "partial",
+        None,
+    )
+    assert classify_breakpoint(verdict("句", "contradicted"), context)[0] == "contradicted"
+    # 期望证据本轮没取到 → 没召回。
+    missed = breakpoint_context(
+        ExpectedEvidence(headings=frozenset({"别的小节"}), records=frozenset({"pay_z99"}))
+    )
+    assert classify_breakpoint(verdict("句", "insufficient"), missed) == (
+        "not_recalled",
+        "insufficient∧期望证据∉本轮证据集",
+        False,
+    )
+    # 期望证据在集但断言没绑它 → 绑错。
+    unbound = breakpoint_context(expected)
+    assert classify_breakpoint(verdict("句", "insufficient"), unbound) == (
+        "mis_bound",
+        "insufficient∧期望证据∈集∧未绑定",
+        True,
+    )
+    # 绑定正确仍证据不足：四类之外，不归类。
+    bound = BreakpointContext(
+        passage_headings=unbound.passage_headings,
+        seen_records=unbound.seen_records,
+        ref_headings=unbound.ref_headings,
+        expected=expected,
+    )
+    binding = AssertionVerdict(
+        assertion=Assertion(text="句", refs=("doc:KB-TS-012#c001",), record_ids=("pay_x01",)),
+        verdict="insufficient",
+    )
+    assert classify_breakpoint(binding, bound)[0] == ""
+    # supported 不进四类。
+    assert classify_breakpoint(verdict("句", "supported"), context)[0] == ""
+
+
+def test_classify_breakpoint_without_expected() -> None:
+    """无题库对照（数据集缺失）时不猜归类：insufficient 不进四类。"""
+    context = breakpoint_context(None)
+    assert classify_breakpoint(verdict("句", "insufficient"), context) == (
+        "",
+        "no_expected_evidence",
+        None,
+    )
+
+
+def test_breakpoint_summary_aggregates() -> None:
+    """汇总聚合：四类计数与矛盾档占比来自逐题归类。"""
+    rows = [
+        audit_row(
+            "FP-BM-SR-0001",
+            (verdict("句一", "partial"), verdict("句二", "insufficient")),
+        ),
+        audit_row(
+            "FP-BM-SR-0002",
+            (verdict("句三", "contradicted"), verdict("句四", "supported")),
+        ),
+    ]
+    expected = ExpectedEvidence(headings=frozenset({"别的小节"}))
+    classified = [
+        replace(row, breakpoints=breakpoint_entries(row, BreakpointContext(expected=expected)))
+        for row in rows
+    ]
+    summary = breakpoint_summary(classified)
+    assert summary.counts == {
+        "overreach": 1,
+        "not_recalled": 1,
+        "mis_bound": 0,
+        "contradicted": 1,
+    }
+    assert abs(summary.contradiction_share - 1 / 3) < 1e-9
+    assert {entry.question_id for entry in summary.samples} == {
+        "FP-BM-SR-0001",
+        "FP-BM-SR-0002",
+    }

@@ -24,8 +24,8 @@ import json
 import sqlite3
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -65,6 +65,7 @@ from flowpay.workflows.multi_agent.citation_check import (
     split_sentences,
 )
 
+from scripts.benchmark import evidence
 from scripts.benchmark.attribution import Row, load_rows
 
 # run.py 顶层带 event_log.runtime 的 fcntl 依赖（容器-only），宿主回放不能
@@ -654,7 +655,8 @@ def verdict_payload(verdict: AssertionVerdict) -> JsonObject:
 class AuditRow:
     """一题的判定行：逐断言判定 + 分支与偏差，JSONL 的最小单元。
 
-    required 是题库必需断言文本（误伤基线的对照面）；breakpoints 由 T010 补齐。
+    required 是题库必需断言文本（误伤基线对照面）；breakpoints 是断点归类
+    （T010）。
     """
 
     question_id: str
@@ -667,14 +669,20 @@ class AuditRow:
     verdicts: tuple[AssertionVerdict, ...]
     deviations: tuple[str, ...]
     required: tuple[str, ...] = ()
+    breakpoints: tuple[BreakpointEntry, ...] = ()
 
 
 async def audit_case(
     case: ReplayCase,
     verifier: ReplayVerifier,
     required: Sequence[str] = (),
+    expected: ExpectedEvidence | None = None,
 ) -> AuditRow:
-    """执行一题的校验器回放；无草稿题零判定并保留分支与偏差。"""
+    """执行一题的校验器回放；无草稿题零判定并保留分支与偏差。
+
+    归类上下文在判定完成后构造：本轮证据状态（PassageSet 标题 + 已见记录）
+    与题库期望证据（expected）合成四类断点的判定输入。
+    """
     verdicts: tuple[AssertionVerdict, ...] = ()
     if case.draft is not None:
         verdicts = await verifier.audit(
@@ -686,7 +694,14 @@ async def audit_case(
                 question_id=case.question_id,
             )
         )
-    return AuditRow(
+    passage_headings, ref_headings = passage_headings_of(case.passages)
+    context = BreakpointContext(
+        passage_headings=passage_headings,
+        seen_records=frozenset(case.seen),
+        ref_headings=ref_headings,
+        expected=expected,
+    )
+    row = AuditRow(
         question_id=case.question_id,
         question_type=case.question_type,
         multi_turn=case.multi_turn,
@@ -701,6 +716,7 @@ async def audit_case(
         ),
         required=tuple(required),
     )
+    return replace(row, breakpoints=tuple(breakpoint_entries(row, context)))
 
 
 def required_assertions(case: JsonObject) -> tuple[str, ...]:
@@ -783,6 +799,200 @@ def collateral_baseline(rows: Sequence[AuditRow]) -> CollateralBaseline:
     )
 
 
+# ---- 断点归类（specs/010 FR-9/T010）：四类断点的判定×期望证据命中规则 ----
+
+# 四类断点词汇（data-model AssertionBreakpoint）；键 = 归类依据的简述。
+BREAKPOINT_LABELS: dict[str, str] = {
+    "overreach": "表述越界",
+    "not_recalled": "没召回",
+    "mis_bound": "绑错",
+    "contradicted": "矛盾",
+}
+
+
+@dataclass(frozen=True)
+class ExpectedEvidence:
+    """题库期望证据的翻译结果（evidence.py 对齐器口径）。
+
+    headings 是期望文档块的运行侧小节标题集（chunk_alignment 反查）；records
+    是期望业务记录编号。expected=None 表示无题库对照（数据集缺失），归类退化
+    为不猜——不把"没对照"算成"没召回"。
+    """
+
+    headings: frozenset[str] = frozenset()
+    records: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class BreakpointEntry:
+    """一条断点归类：判定档 × 期望证据命中状态 → 四类之一（或不归类）。"""
+
+    question_id: str
+    question_type: str
+    task_pass: bool
+    breakpoint: str
+    rule: str
+    assertion: str
+    recalled: bool | None
+
+
+@dataclass(frozen=True)
+class BreakpointContext:
+    """一题的归类上下文：本轮证据状态与题库期望证据。
+
+    passage_headings/seen_records 是本轮"已取到"的证据状态（PassageSet 恢复 +
+    tool.result 记录恢复）；ref_headings 把断言引用翻成小节标题（绑定判定用）。
+    expected 为 None 表示无题库对照。
+    """
+
+    passage_headings: frozenset[str] = frozenset()
+    seen_records: frozenset[str] = frozenset()
+    ref_headings: Mapping[str, str] = field(default_factory=lambda: dict[str, str]())
+    expected: ExpectedEvidence | None = None
+
+
+def classify_breakpoint(
+    verdict: AssertionVerdict, context: BreakpointContext
+) -> tuple[str, str, bool | None]:
+    """单条判定的断点归类；返回 (断点, 依据, 期望证据命中状态)。
+
+    规则（spec US2）：partial→overreach；contradicted→contradicted；
+    insufficient ∧ 期望证据∉本轮证据集→not_recalled；∈集 ∧ 未绑定→mis_bound。
+    supported 与无对照不进四类（断点只解释失败与矛盾形态）。
+    """
+    if verdict.verdict == "partial":
+        return "overreach", "partial", None
+    if verdict.verdict == "contradicted":
+        return "contradicted", "contradicted", None
+    if verdict.verdict != "insufficient":
+        return "", "supported", None
+    if context.expected is None:
+        return "", "no_expected_evidence", None
+    expected = context.expected
+    doc_recalled = bool(expected.headings & context.passage_headings)
+    record_recalled = bool(expected.records & context.seen_records)
+    recalled = doc_recalled or record_recalled
+    bound_headings = {
+        context.ref_headings.get(ref, "")
+        for ref in verdict.assertion.refs
+        if context.ref_headings.get(ref, "")
+    }
+    bound_records = set(verdict.assertion.record_ids)
+    bound = bool(bound_headings & expected.headings) or bool(
+        bound_records & expected.records
+    )
+    if not recalled:
+        return "not_recalled", "insufficient∧期望证据∉本轮证据集", False
+    if not bound:
+        return "mis_bound", "insufficient∧期望证据∈集∧未绑定", True
+    return "", "insufficient∧期望证据∈集∧已绑定（四类外）", True
+
+
+def breakpoint_entries(
+    row: AuditRow, context: BreakpointContext
+) -> list[BreakpointEntry]:
+    """一题的逐断言归类：supported/无对照不产出条目。"""
+    entries: list[BreakpointEntry] = []
+    for verdict in row.verdicts:
+        breakpoint, rule, recalled = classify_breakpoint(verdict, context)
+        if not breakpoint:
+            continue
+        entries.append(
+            BreakpointEntry(
+                question_id=row.question_id,
+                question_type=row.question_type,
+                task_pass=row.task_pass,
+                breakpoint=breakpoint,
+                rule=rule,
+                assertion=verdict.assertion.text,
+                recalled=recalled,
+            )
+        )
+    return entries
+
+
+@dataclass(frozen=True)
+class BreakpointSummary:
+    """四类断点分布 + 逐条样例（FR-9 汇总报告的数据形态）。"""
+
+    counts: Mapping[str, int]
+    samples: tuple[BreakpointEntry, ...]
+
+    @property
+    def contradiction_share(self) -> float:
+        """矛盾档占比：矛盾样例数 / 全部归类条数；无条目时为 0。"""
+        total = sum(self.counts.values())
+        return self.counts.get("contradicted", 0) / total if total else 0.0
+
+
+def breakpoint_summary(rows: Sequence[AuditRow]) -> BreakpointSummary:
+    """汇总断点分布与样例：归类已在 audit_case 内完成，这里聚合。"""
+    counts: dict[str, int] = {name: 0 for name in BREAKPOINT_LABELS}
+    samples: list[BreakpointEntry] = []
+    for row in rows:
+        for entry in row.breakpoints:
+            counts[entry.breakpoint] = counts.get(entry.breakpoint, 0) + 1
+            samples.append(entry)
+    return BreakpointSummary(counts=counts, samples=tuple(samples))
+
+
+def passage_headings_of(
+    passages: Sequence[Passage],
+) -> tuple[frozenset[str], Mapping[str, str]]:
+    """本轮证据池的标题状态：标题集与 id→标题索引（evidence.section_of 口径）。"""
+    headings: set[str] = set()
+    ref_headings: dict[str, str] = {}
+    for item in passages:
+        heading = evidence.section_of(item.id, item.source.locator)
+        headings.add(heading)
+        ref_headings[item.id] = heading
+    return frozenset(headings), ref_headings
+
+
+def expected_evidence_of(
+    question_id: str, alignment: Mapping[str, str]
+) -> ExpectedEvidence | None:
+    """题库期望证据 → 运行侧词汇（evidence.expected_ids + chunk_alignment）。
+
+    数据集不可得（FLOWPAY_DATASET_ROOT 未设）时返回 None：归类退化不猜，
+    没有标准答案就无法区分"没召回"与"绑错"（research D7）。
+    """
+    try:
+        documents, records = evidence.expected_ids(question_id)
+    except SystemExit:
+        return None
+    headings = frozenset(
+        alignment[identifier] for identifier in documents if alignment.get(identifier)
+    )
+    record_names = frozenset(name.removeprefix("record:") for name in records)
+    return ExpectedEvidence(headings=headings, records=record_names)
+
+
+def expected_evidence_map(
+    question_ids: Iterable[str], alignment: Mapping[str, str] | None = None
+) -> dict[str, ExpectedEvidence | None]:
+    """全部候选题的期望证据映射；对齐器缺数据集时对齐表取空。"""
+    if alignment is None:
+        try:
+            alignment = evidence.chunk_alignment()
+        except SystemExit:
+            alignment = {}
+    return {
+        question_id: expected_evidence_of(question_id, alignment)
+        for question_id in question_ids
+    }
+
+
+def breakpoint_payload(entry: BreakpointEntry) -> JsonObject:
+    """断点条目的 JSON 形态：归类 + 依据 + 期望证据命中状态。"""
+    return {
+        "breakpoint": entry.breakpoint,
+        "rule": entry.rule,
+        "assertion": entry.assertion,
+        "recalled": entry.recalled,
+    }
+
+
 def write_verdicts(path: Path, rows: Sequence[AuditRow]) -> None:
     """逐题逐断言判定 JSONL：一行一题，verdicts 条目与契约同构。"""
     lines: list[str] = []
@@ -800,6 +1010,9 @@ def write_verdicts(path: Path, rows: Sequence[AuditRow]) -> None:
                     "deviations": list(row.deviations),
                     "required": list(row.required),
                     "verdicts": [verdict_payload(verdict) for verdict in row.verdicts],
+                    "breakpoints": [
+                        breakpoint_payload(entry) for entry in row.breakpoints
+                    ],
                 },
                 ensure_ascii=False,
             )
@@ -839,8 +1052,35 @@ def render_verdict_report(rows: Sequence[AuditRow]) -> str:
             note = verdict.overreach.note if verdict.overreach else ""
             lines.append(f"- `{question_id}` {verdict.assertion.text} {note}".rstrip())
         lines.append("")
+    lines.extend(breakpoint_section(breakpoint_summary(rows)))
     lines.extend(collateral_section(collateral_baseline(rows)))
     return "\n".join(lines)
+
+
+def breakpoint_section(summary: BreakpointSummary) -> list[str]:
+    """断点归类段（T010）：四类分布 + 矛盾占比 + 逐条样例（FR-9）。"""
+    total = sum(summary.counts.values())
+    lines = [
+        "## 断点归类分布（四类）",
+        "",
+        "、".join(
+            f"{BREAKPOINT_LABELS[name]} {summary.counts.get(name, 0)}"
+            for name in BREAKPOINT_LABELS
+        )
+        + f"（归类条数合计 {total}；矛盾档占比 {summary.contradiction_share:.1%}）",
+        "",
+    ]
+    for name, label in BREAKPOINT_LABELS.items():
+        matched = [entry for entry in summary.samples if entry.breakpoint == name]
+        if not matched:
+            continue
+        lines.append(f"### {label}样例（{len(matched)} 条）")
+        lines.append("")
+        for entry in matched[:5]:
+            status = "已召回" if entry.recalled else "未召回"
+            lines.append(f"- `{entry.question_id}` {status}｜{entry.assertion}")
+        lines.append("")
+    return lines
 
 
 def collateral_section(baseline: CollateralBaseline) -> list[str]:
@@ -886,11 +1126,18 @@ async def audit_arm(
     cases: Sequence[ReplayCase],
     verifier: ReplayVerifier,
     required: Mapping[str, Sequence[str]] | None = None,
+    expected: Mapping[str, ExpectedEvidence | None] | None = None,
 ) -> list[AuditRow]:
     """逐题执行校验器；顺序执行足够（判定是本地计算，无并发需求）。"""
     required = required or {}
+    expected = expected or {}
     return [
-        await audit_case(case, verifier, required.get(case.question_id, ()))
+        await audit_case(
+            case,
+            verifier,
+            required.get(case.question_id, ()),
+            expected.get(case.question_id),
+        )
         for case in cases
     ]
 
@@ -947,8 +1194,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         require_text(case["question_id"]): required_assertions(case)
         for case in selected_cases(per_type)
     }
+    expected = expected_evidence_map(
+        require_text(c["question_id"]) for c in selected_cases(per_type)
+    )
     verifier = load_verifier(args.verifier, load_fixture(args.fixture))
-    rows = asyncio.run(audit_arm(cases, verifier, required))
+    rows = asyncio.run(audit_arm(cases, verifier, required, expected))
     out_dir = args.report
     out_dir.mkdir(parents=True, exist_ok=True)
     write_verdicts(out_dir / "assertion-verdicts.jsonl", rows)
