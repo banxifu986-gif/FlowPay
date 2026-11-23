@@ -17,16 +17,11 @@ from typing import cast
 from openai.types.chat import ChatCompletion
 
 from flowpay.core.chat.record_ids import BUSINESS_RECORD_ID
-from flowpay.core.json import JsonObject, require_list, require_object, require_text
+from flowpay.core.json import JsonObject, require_list, require_object
 from flowpay.core.llm.chat.client import ChatClient
 from flowpay.core.llm.chat.messages import answer_text
 from flowpay.core.verify.assembly import EvidenceBundle, render_evidence
-from flowpay.core.verify.contracts import (
-    Assertion,
-    AssertionVerdict,
-    Conflict,
-    Overreach,
-)
+from flowpay.core.verify.contracts import Assertion, AssertionVerdict, Conflict, Overreach
 from flowpay.core.verify.extractor import decode_json
 
 VERIFY_SYSTEM_PROMPT = (
@@ -100,19 +95,23 @@ def _overreach(raw: object) -> Overreach | None:
     """越界定位解析；维度不在四档词形或说明空白视为缺失。"""
     if not isinstance(raw, dict):
         return None
-    dimension = raw.get("dimension")
-    note = raw.get("note")
+    entries = cast("JsonObject", raw)
+    dimension = entries.get("dimension")
+    note = entries.get("note")
     if dimension not in _DIMENSIONS or not (isinstance(note, str) and note.strip()):
         return None
-    return Overreach(dimension=cast("str", dimension), note=note)
+    return Overreach(dimension=dimension, note=note)  # type: ignore[arg-type]
 
 
 def _conflict(raw: object) -> Conflict | None:
     """矛盾详情解析；出处与冲突点任一缺失视为无详情（判定档位保留）。"""
     if not isinstance(raw, dict):
         return None
-    sources = [value for value in require_list(raw.get("sources", [])) if isinstance(value, str)]
-    point = raw.get("point")
+    entries = cast("JsonObject", raw)
+    sources = [
+        value for value in require_list(entries.get("sources", [])) if isinstance(value, str)
+    ]
+    point = entries.get("point")
     if not sources or not (isinstance(point, str) and point.strip()):
         return None
     return Conflict(sources=tuple(sources), point=point)
@@ -129,11 +128,11 @@ def parse_verdicts(
     for item in items:
         if not isinstance(item, dict):
             continue
-        text = item.get("text")
-        assertion = by_text.get(text) if isinstance(text, str) else None
-        if assertion is None:
+        record = cast("JsonObject", item)
+        text = record.get("text")
+        if not isinstance(text, str) or text not in by_text:
             continue  # 对不上的条目跳过，对应断言由调用方兜底
-        found[text] = _verdict(assertion, item)
+        found[text] = _verdict(by_text[text], record)
     return found
 
 

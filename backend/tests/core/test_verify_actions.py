@@ -130,7 +130,9 @@ def test_match_failure_downgrades_instead_of_replace() -> None:
 def test_insufficient_downgrades_with_unverified_mark() -> None:
     """证据不足→降级「未能核实：原句」，列表前缀保留。"""
     sentence = "- 退款已提交 pay_bg_001_0003。"
-    (action,) = map_actions((verdict("insufficient", sentence, refs=("KB-BILL-003#c001",)),), bundle(), EXCERPTS)
+    (action,) = map_actions(
+        (verdict("insufficient", sentence, refs=("KB-BILL-003#c001",)),), bundle(), EXCERPTS
+    )
     assert action.action == "downgrade"
     assert action.revision == "- 未能核实：退款已提交 pay_bg_001_0003。"
     assert "- 未能核实：退款已提交 pay_bg_001_0003。" in apply_actions(DRAFT, (action,))
@@ -182,4 +184,7 @@ def test_apply_replaces_first_occurrence_only() -> None:
             revision="企业版工单通常 5 个工作日响应。",
         ),
     )
-    assert apply_actions("企业版响应快。企业版响应快。", actions) == "企业版工单通常 5 个工作日响应。企业版响应快。"
+    assert (
+        apply_actions("企业版响应快。企业版响应快。", actions)
+        == "企业版工单通常 5 个工作日响应。企业版响应快。"
+    )

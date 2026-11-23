@@ -48,11 +48,12 @@ def business_record_ids(text: str) -> tuple[str, ...]:
     US4 备注），fullmatch 会拒绝 0003 这类多数字尾段；api_v2 这类「字母段尾带数字」
     的词形不算记录编号，不进摘录装配。
     """
-    return tuple(
-        identifier
-        for identifier in dict.fromkeys(RECORD_ID.findall(text))
-        if BUSINESS_RECORD_ID.search(identifier)
-    )
+    found: list[str] = []
+    for match in RECORD_ID.finditer(text):
+        identifier = match.group(0)
+        if identifier not in found and BUSINESS_RECORD_ID.search(identifier):
+            found.append(identifier)
+    return tuple(found)
 
 
 def _matching_passage(ref: str, used: set[str], passages: Sequence[Passage]) -> Passage | None:

@@ -1,12 +1,22 @@
 # 回归测试：fail-open 包装（specs/010 FR-6）。固定输入复现边界，不作为业务答案来源。
 import asyncio
+from collections.abc import Sequence
+from typing import cast
 
 import pytest
 
+from flowpay.core.chat.usage_view import UsageEntry
+from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.llm.chat.client import ChatClient
-from flowpay.core.verify import errors
 from flowpay.core.verify.errors import audit_response
-from tests.core.verify_fixtures import ROUNDS, RecordingSink, ScriptedModel, completion, json_payload
+from tests.core.verify_fixtures import (
+    ROUNDS,
+    RecordingSink,
+    ScriptedModel,
+    chat_client,
+    completion,
+    json_payload,
+)
 
 DRAFT = "企业版所有用户最多等 5 天 [KB-TS-012#c001]。"
 SENTENCE = "企业版所有用户最多等 5 天 [KB-TS-012#c001]。"
@@ -29,17 +39,17 @@ VERDICT_PARTIAL = {
 def chat_with(*responses: object) -> tuple[ChatClient, ScriptedModel]:
     """装配脚本化模型（响应或异常按序弹出；取消属 BaseException 也要能注入）。"""
     items = tuple(
-        response if isinstance(response, BaseException) else completion(response)  # type: ignore[arg-type]
+        response if isinstance(response, BaseException) else completion(cast("str", response))
         for response in responses
     )
-    model = ScriptedModel(*items)  # type: ignore[arg-type]
-    return ChatClient(model, RecordingSink()), model
+    model = ScriptedModel(*items)
+    return chat_client(model, RecordingSink()), model
 
 
 async def test_audit_full_chain_replaces_and_records_usage() -> None:
     """全链路：抽取+批量校验+处置，替换落最终文本，两次调用入账用量。"""
     chat, model = chat_with(json_payload(EXTRACTION), json_payload(VERDICT_PARTIAL))
-    usage: list = []
+    usage: list[UsageEntry] = []
     audit = await audit_response(
         chat,
         text=DRAFT,
@@ -117,9 +127,9 @@ async def test_audit_failures_fail_open_with_original_text(kind: str) -> None:
         class Exploding:
             """score 读数即炸的片段替身，注入装配异常。"""
 
-            id = passage.id
-            title = passage.title
-            text = passage.text
+            id: str = passage.id
+            title: str = passage.title
+            text: str = passage.text
 
             @property
             def score(self) -> float:
@@ -130,7 +140,7 @@ async def test_audit_failures_fail_open_with_original_text(kind: str) -> None:
             chat,
             text=DRAFT,
             question="?",
-            passages=(Exploding(),),  # type: ignore[list-item]
+            passages=cast("Sequence[Passage]", (Exploding(),)),
             record_excerpts={},
             evidence_budget=8000,
         )
@@ -146,7 +156,7 @@ async def test_audit_failures_fail_open_with_original_text(kind: str) -> None:
 
 async def test_id_check_failure_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """FR-3 代码级核对异常同样 fail-open（注入到核对函数）。"""
-    def explode(*args: object, **kwargs: object) -> None:
+    def explode(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("id check boom")
 
     monkeypatch.setattr("flowpay.core.verify.verifier.screen_assertions", explode)
@@ -162,14 +172,19 @@ async def test_cancelled_error_propagates() -> None:
     chat, _ = chat_with(asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):
         await audit_response(
-            chat, text=DRAFT, question="?", passages=ROUNDS, record_excerpts={}, evidence_budget=8000
+            chat,
+            text=DRAFT,
+            question="?",
+            passages=ROUNDS,
+            record_excerpts={},
+            evidence_budget=8000,
         )
 
 
 async def test_failed_chain_after_successful_call_still_records_usage() -> None:
     """费用已发生的调用照常入账：抽取成功、校验故障，仍记一次用量（002 先例）。"""
     chat, _ = chat_with(json_payload(EXTRACTION), RuntimeError("verify offline"))
-    usage: list = []
+    usage: list[UsageEntry] = []
     audit = await audit_response(
         chat,
         text=DRAFT,

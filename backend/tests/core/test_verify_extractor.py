@@ -1,13 +1,22 @@
 # 回归测试：断言抽取调用（specs/010 FR-2）。固定输入复现边界，不作为业务答案来源。
+from typing import cast
+
 import pytest
 
+from flowpay.core.json import JsonObject
 from flowpay.core.llm.chat.client import ChatClient
 from flowpay.core.verify.extractor import extract_assertions, parse_assertions
-from tests.core.verify_fixtures import RecordingSink, ScriptedModel, completion, json_payload
+from tests.core.verify_fixtures import (
+    RecordingSink,
+    ScriptedModel,
+    chat_client,
+    completion,
+    json_payload,
+)
 
 DRAFT = "企业版所有用户最多等 5 天 [KB-TS-012#c001]。退款已提交 pay_bg_001_0003。"
 
-EXTRACTIONS = [
+EXTRACTIONS: list[JsonObject] = [
     {
         "text": "企业版所有用户最多等 5 天 [KB-TS-012#c001]。",
         "refs": ["doc:KB-TS-012#c001"],
@@ -21,12 +30,12 @@ def extractor_with(content: str | None) -> tuple[ChatClient, ScriptedModel, Reco
     """装配脚本化抽取模型；返回客户端、模型与事件出口。"""
     model = ScriptedModel(completion(content))
     sink = RecordingSink()
-    return ChatClient(model, sink), model, sink
+    return chat_client(model, sink), model, sink
 
 
 async def test_extract_returns_normalized_atomic_assertions() -> None:
     """清单解析：refs 规范化去前缀，record_ids 只保留业务记录词形。"""
-    chat, model, _ = extractor_with(json_payload({"assertions": EXTRACTIONS}))
+    chat, _, _ = extractor_with(json_payload({"assertions": EXTRACTIONS}))
     extraction = await extract_assertions(chat, text=DRAFT)
     assert [a.text for a in extraction.assertions] == [
         "企业版所有用户最多等 5 天 [KB-TS-012#c001]。",
@@ -43,8 +52,8 @@ async def test_extract_prompts_model_once_with_internal_output() -> None:
     chat, model, sink = extractor_with(json_payload({"assertions": EXTRACTIONS}))
     await extract_assertions(chat, text=DRAFT)
     assert len(model.requests) == 1
-    messages = model.requests[0]["messages"]
-    assert any(DRAFT in str(m.get("content")) for m in messages)  # type: ignore[union-attr]
+    messages = cast("list[JsonObject]", model.requests[0]["messages"])
+    assert any(DRAFT in str(m.get("content")) for m in messages)
     assert [kind for kind, _ in sink.events] == ["model.request", "model.delta", "model.response"]
     request_event = sink.events[0][1]
     assert request_event["output"] == "internal"
@@ -97,7 +106,7 @@ async def test_extract_bad_output_raises_for_fail_open(content: str) -> None:
 async def test_extract_model_failure_propagates() -> None:
     """调用失败上抛（取消与故障由包装层决定 fail-open）。"""
     model = ScriptedModel(RuntimeError("model offline"))
-    chat = ChatClient(model, RecordingSink())
+    chat = chat_client(model, RecordingSink())
     with pytest.raises(RuntimeError):
         await extract_assertions(chat, text=DRAFT)
 

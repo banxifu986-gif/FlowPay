@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 
-from flowpay.core.chat.record_ids import BUSINESS_RECORD_ID
 from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.verify.assembly import EvidenceBundle, bare_id, business_record_ids, passage_refs
 from flowpay.core.verify.contracts import Assertion, AssertionAction, AssertionVerdict
@@ -38,7 +37,11 @@ NUMBER_TOKEN = re.compile(r"\d+(?:\.\d+)?")
 
 def split_sentences(text: str) -> list[str]:
     """句级切分（处置锚点匹配口径）：逐行再切句，与筛选层同一份词面。"""
-    return [sentence for line in text.splitlines() for sentence in _SENTENCE.findall(line)]
+    return [
+        match.group(0)
+        for line in text.splitlines()
+        for match in _SENTENCE.finditer(line)
+    ]
 
 
 def downgrade_text(sentence: str) -> str:
@@ -77,7 +80,9 @@ def map_actions(
             and item.revision
             # 句级等值匹配（D5）：锚点必须整句出现在待校验文本里，匹配失败降级不替换。
             and _locatable(sentence, bundle.text)
-            and _within_corpus(item.revision, _bound_corpus(item.assertion, bundle, record_excerpts))
+            and _within_corpus(
+                item.revision, _bound_corpus(item.assertion, bundle, record_excerpts)
+            )
         ):
             actions.append(
                 AssertionAction(
@@ -176,8 +181,8 @@ def _passage_for(ref: str, passages: Sequence[Passage]) -> Passage | None:
 
 def _within_corpus(revision: str, corpus: str) -> bool:
     """替换句的数字与记录编号、片段引用必须为语料子集（spec 防线②）。"""
-    numbers = set(NUMBER_TOKEN.findall(corpus))
-    if any(token not in numbers for token in NUMBER_TOKEN.findall(revision)):
+    numbers = {match.group(0) for match in NUMBER_TOKEN.finditer(corpus)}
+    if any(match.group(0) not in numbers for match in NUMBER_TOKEN.finditer(revision)):
         return False
     corpus_refs = set(passage_refs(corpus))
     if any(ref not in corpus_refs for ref in passage_refs(revision)):

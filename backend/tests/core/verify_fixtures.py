@@ -7,9 +7,11 @@ from typing import cast
 
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCompletionToolParam
 
+from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.json import JsonObject
 from flowpay.core.knowledge.contracts import Passage, PassageSource
 from flowpay.core.llm.chat import ChunkSink
+from flowpay.core.llm.chat.client import ChatClient
 
 
 def passage(identifier: str, text: str, score: float) -> Passage:
@@ -48,7 +50,11 @@ def completion(content: str | None) -> ChatCompletion:
             "created": 0,
             "model": "fixture",
             "choices": [
-                {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": content},
+                }
             ],
         }
     )
@@ -62,11 +68,11 @@ def json_payload(payload: object) -> str:
 class ScriptedModel:
     """逐次弹出预设响应或异常的模型替身；请求完整保存供断言。"""
 
-    name = "scripted"
+    name: str = "scripted"
     capabilities: dict[str, bool] = {"tools": True, "streaming": False}
 
-    def __init__(self, *responses: ChatCompletion | Exception) -> None:
-        self.responses: list[ChatCompletion | Exception] = list(responses)
+    def __init__(self, *responses: ChatCompletion | BaseException) -> None:
+        self.responses: list[ChatCompletion | BaseException] = list(responses)
         self.requests: list[JsonObject] = []
 
     def prepare(
@@ -94,12 +100,26 @@ class RecordingSink:
     def __init__(self) -> None:
         self.events: list[tuple[str, JsonObject]] = []
 
-    async def emit(self, kind: str, payload: JsonObject, call_id: str | None = None) -> None:
-        _ = call_id
+    async def emit(
+        self,
+        kind: str,
+        payload: JsonObject,
+        call_id: str | None = None,
+        parent_call_id: str | None = None,
+    ) -> None:
+        """按事件出口协议记录一次调用，忽略调用关联编号。"""
+        del call_id, parent_call_id
         self.events.append((kind, payload))
 
 
-def copy_messages(messages: Sequence[ChatCompletionMessageParam]) -> list[ChatCompletionMessageParam]:
+def chat_client(model: ScriptedModel, sink: RecordingSink) -> ChatClient:
+    """按 EventSink 协议装配校验用客户端（协议返回 Event 的差异以既有先例绕过）。"""
+    return ChatClient(model, cast("EventSink", cast(object, sink)))
+
+
+def copy_messages(
+    messages: Sequence[ChatCompletionMessageParam],
+) -> list[ChatCompletionMessageParam]:
     """深拷贝消息序列，避免调用方追加内容污染已记录请求。"""
     return cast(
         "list[ChatCompletionMessageParam]",
