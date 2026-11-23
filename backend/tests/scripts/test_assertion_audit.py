@@ -23,14 +23,17 @@ if str(ROOT) not in sys.path:
 
 from scripts.benchmark.assertion_audit import (  # noqa: E402
     AuditInput,
+    AuditRow,
     FixtureVerifier,
     ReplayCase,
     audit_case,
+    collateral_baseline,
     draft_of,
     load_fixture,
     match_sessions,
     record_excerpts_of,
     replay_chain,
+    required_assertions,
     restore_case,
     seen_ids,
     verdict_payload,
@@ -430,3 +433,95 @@ async def test_write_verdicts_jsonl(tmp_path: Path) -> None:
     line = require_object(parse_json(out.read_text(encoding="utf-8")))
     assert line["question_id"] == "FP-BM-SR-0001" and line["branch"] == "synthesize_answer"
     assert line["verdicts"] == []
+
+
+def audit_row(
+    question_id: str,
+    verdicts: tuple[AssertionVerdict, ...],
+    *,
+    task_pass: bool = True,
+    required: tuple[str, ...] = (),
+) -> AuditRow:
+    """误伤基线测试用的判定行替身。"""
+    return AuditRow(
+        question_id=question_id,
+        question_type="simple_retrieval",
+        multi_turn=False,
+        task_pass=task_pass,
+        evidence_pass=True,
+        session_id="s1",
+        branch="synthesize_answer",
+        verdicts=verdicts,
+        deviations=(),
+        required=required,
+    )
+
+
+def test_collateral_baseline_counts_and_samples() -> None:
+    """通过题的 partial 判定句覆盖必需断言 → 计入误伤；失败题不参与。"""
+    required = ("FP-4041 表示 Customer 不存在或不可见。",)
+    harmed = audit_row(
+        "FP-BM-SR-0001",
+        (
+            AssertionVerdict(
+                assertion=Assertion(
+                    text="FP-4041 的含义是 Customer 不存在，见 [doc:KB-TS-012#c001]。",
+                ),
+                verdict="partial",
+            ),
+        ),
+        required=required,
+    )
+    clean = audit_row(
+        "FP-BM-SR-0002",
+        (
+            AssertionVerdict(
+                assertion=Assertion(text="见 [doc:KB-TS-012#c001]。"), verdict="partial"
+            ),
+        ),
+        required=required,
+    )
+    failing = audit_row(
+        "FP-BM-SR-0003",
+        (
+            AssertionVerdict(
+                assertion=Assertion(text="FP-4041 的含义是 Customer 不存在。"), verdict="partial"
+            ),
+        ),
+        task_pass=False,
+        required=required,
+    )
+    baseline = collateral_baseline([harmed, clean, failing])
+    assert baseline.passed_required_total == 2
+    assert baseline.harmed == 1
+    assert baseline.samples[0].question_id == "FP-BM-SR-0001"
+    assert baseline.samples[0].matched == required
+    assert abs(baseline.rate - 0.5) < 1e-9
+
+
+def test_collateral_baseline_zero_when_all_supported() -> None:
+    """通过题零误伤形态：判定全 supported → 比例 0（go 侧理想值）。"""
+    required = ("FP-4041 表示 Customer 不存在或不可见。",)
+    clean = audit_row(
+        "FP-BM-SR-0001",
+        (
+            AssertionVerdict(
+                assertion=Assertion(text="FP-4041 表示 Customer 不存在。"), verdict="supported"
+            ),
+        ),
+        required=required,
+    )
+    baseline = collateral_baseline([clean])
+    assert baseline.passed_required_total == 1 and baseline.harmed == 0 and baseline.rate == 0.0
+
+
+def test_required_assertions_from_case() -> None:
+    """题库必需断言文本提取：text 字段逐条展开。"""
+    blueprint: JsonObject = {
+        "question_id": "FP-BM-SR-0001",
+        "ground_truth": {
+            "required_assertions": [{"text": "断言一。"}, {"text": "断言二。"}],
+            "negative_assertions": [{"text": "不得认定：断言三。"}],
+        },
+    }
+    assert required_assertions(blueprint) == ("断言一。", "断言二。")

@@ -654,7 +654,7 @@ def verdict_payload(verdict: AssertionVerdict) -> JsonObject:
 class AuditRow:
     """一题的判定行：逐断言判定 + 分支与偏差，JSONL 的最小单元。
 
-    breakpoints / collateral 由 T010/T011 补齐；T009 先落 verdicts 骨架。
+    required 是题库必需断言文本（误伤基线的对照面）；breakpoints 由 T010 补齐。
     """
 
     question_id: str
@@ -666,9 +666,14 @@ class AuditRow:
     branch: str
     verdicts: tuple[AssertionVerdict, ...]
     deviations: tuple[str, ...]
+    required: tuple[str, ...] = ()
 
 
-async def audit_case(case: ReplayCase, verifier: ReplayVerifier) -> AuditRow:
+async def audit_case(
+    case: ReplayCase,
+    verifier: ReplayVerifier,
+    required: Sequence[str] = (),
+) -> AuditRow:
     """执行一题的校验器回放；无草稿题零判定并保留分支与偏差。"""
     verdicts: tuple[AssertionVerdict, ...] = ()
     if case.draft is not None:
@@ -694,6 +699,87 @@ async def audit_case(case: ReplayCase, verifier: ReplayVerifier) -> AuditRow:
             *case.deviations,
             *(f"invented:{name}" for name in check_invented(case)),
         ),
+        required=tuple(required),
+    )
+
+
+def required_assertions(case: JsonObject) -> tuple[str, ...]:
+    """题的必需断言文本（ground_truth.required_assertions），误伤基线对照面。"""
+    truth = require_object(case["ground_truth"])
+    return tuple(
+        require_text(require_object(item)["text"])
+        for item in require_list(truth.get("required_assertions") or [])
+    )
+
+
+@dataclass(frozen=True)
+class CollateralEntry:
+    """一条误伤样例：通过题的必需断言被判为 partial/contradicted。"""
+
+    question_id: str
+    assertion: str
+    verdict: Verdict
+    matched: tuple[str, ...]
+
+
+def collateral_entries(row: AuditRow) -> list[CollateralEntry]:
+    """一题的误伤条目：只看通过题（task_pass=true），只看 partial/contradicted。
+
+    "必需断言被误判"按评测同口径对齐：判定句文本对该必需断言命中（子串/二元
+    组重叠过半），即这句作答承载了该必需断言——校验器收紧/降级它会直接影响
+    task_pass（SC-6 通过题转失败口径的预测源）。
+    """
+    if not row.task_pass:
+        return []
+    entries: list[CollateralEntry] = []
+    for verdict in row.verdicts:
+        if verdict.verdict not in ("partial", "contradicted"):
+            continue
+        matched = tuple(
+            text
+            for text in row.required
+            if text_supported(verdict.assertion.text, text)
+        )
+        if matched:
+            entries.append(
+                CollateralEntry(
+                    question_id=row.question_id,
+                    assertion=verdict.assertion.text,
+                    verdict=verdict.verdict,
+                    matched=matched,
+                )
+            )
+    return entries
+
+
+@dataclass(frozen=True)
+class CollateralBaseline:
+    """误伤基线（SC-6 go/no-go 数据源）：比例 + 逐条样例。"""
+
+    passed_required_total: int
+    harmed: int
+    samples: tuple[CollateralEntry, ...]
+
+    @property
+    def rate(self) -> float:
+        """误伤比例：误伤断言条数 / 通过题必需断言总数；无通过题时为 0。"""
+        return (
+            self.harmed / self.passed_required_total
+            if self.passed_required_total
+            else 0.0
+        )
+
+
+def collateral_baseline(rows: Sequence[AuditRow]) -> CollateralBaseline:
+    """汇总误伤基线：通过题必需断言总数为分母，覆盖误判条数为分子。"""
+    passed_required_total = sum(len(row.required) for row in rows if row.task_pass)
+    samples: list[CollateralEntry] = []
+    for row in rows:
+        samples.extend(collateral_entries(row))
+    return CollateralBaseline(
+        passed_required_total=passed_required_total,
+        harmed=len(samples),
+        samples=tuple(samples),
     )
 
 
@@ -712,6 +798,7 @@ def write_verdicts(path: Path, rows: Sequence[AuditRow]) -> None:
                     "session_id": row.session_id,
                     "branch": row.branch,
                     "deviations": list(row.deviations),
+                    "required": list(row.required),
                     "verdicts": [verdict_payload(verdict) for verdict in row.verdicts],
                 },
                 ensure_ascii=False,
@@ -752,7 +839,29 @@ def render_verdict_report(rows: Sequence[AuditRow]) -> str:
             note = verdict.overreach.note if verdict.overreach else ""
             lines.append(f"- `{question_id}` {verdict.assertion.text} {note}".rstrip())
         lines.append("")
+    lines.extend(collateral_section(collateral_baseline(rows)))
     return "\n".join(lines)
+
+
+def collateral_section(baseline: CollateralBaseline) -> list[str]:
+    """误伤基线段（T011）：比例 + 逐条样例，SC-6 go/no-go 的数据源。"""
+    summary = (
+        f"- 通过题必需断言总数：{baseline.passed_required_total}；"
+        f"误伤 {baseline.harmed} 条，比例 {baseline.rate:.1%}"
+    )
+    lines = [
+        "## 误伤基线（通过题必需断言被判 partial/contradicted）",
+        "",
+        summary,
+        "",
+    ]
+    for entry in baseline.samples:
+        matched = "、".join(f"「{text}」" for text in entry.matched)
+        lines.append(
+            f"- `{entry.question_id}` [{entry.verdict}] {entry.assertion} ← {matched}"
+        )
+    lines.append("")
+    return lines
 
 
 def load_verifier(
@@ -774,10 +883,16 @@ def load_verifier(
 
 
 async def audit_arm(
-    cases: Sequence[ReplayCase], verifier: ReplayVerifier
+    cases: Sequence[ReplayCase],
+    verifier: ReplayVerifier,
+    required: Mapping[str, Sequence[str]] | None = None,
 ) -> list[AuditRow]:
     """逐题执行校验器；顺序执行足够（判定是本地计算，无并发需求）。"""
-    return [await audit_case(case, verifier) for case in cases]
+    required = required or {}
+    return [
+        await audit_case(case, verifier, required.get(case.question_id, ()))
+        for case in cases
+    ]
 
 
 class Arguments(argparse.Namespace):
@@ -828,8 +943,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     else:
         per_type = args.sample
     cases = replay_arm(args.arm, per_type)
+    required = {
+        require_text(case["question_id"]): required_assertions(case)
+        for case in selected_cases(per_type)
+    }
     verifier = load_verifier(args.verifier, load_fixture(args.fixture))
-    rows = asyncio.run(audit_arm(cases, verifier))
+    rows = asyncio.run(audit_arm(cases, verifier, required))
     out_dir = args.report
     out_dir.mkdir(parents=True, exist_ok=True)
     write_verdicts(out_dir / "assertion-verdicts.jsonl", rows)
