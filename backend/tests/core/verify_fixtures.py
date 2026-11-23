@@ -8,7 +8,35 @@ from typing import cast
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCompletionToolParam
 
 from flowpay.core.json import JsonObject
+from flowpay.core.knowledge.contracts import Passage, PassageSource
 from flowpay.core.llm.chat import ChunkSink
+
+
+def passage(identifier: str, text: str, score: float) -> Passage:
+    """构造一个最小片段；id 用真实形态 doc:KB-XXX#cNNN。"""
+    return Passage(
+        id=identifier,
+        title=f"{identifier} 片段",
+        text=text,
+        score=score,
+        source=PassageSource(
+            collection_id="fixture",
+            doc_id=identifier.split("#")[0].removeprefix("doc:"),
+            chunk_no=1,
+            path="knowledge/fixture.md",
+            sha256="fixture",
+            locator={"start_char": 0},
+            metadata={},
+        ),
+    )
+
+
+# 本轮片段集：绑定主证据 + 反证候选，供装配/校验/处置用例复用。
+ROUNDS = (
+    passage("doc:KB-TS-012#c001", "企业版工单通常 5 个工作日响应。", 0.9),
+    passage("doc:KB-TS-012#c002", "免费版不提供专属工单通道。", 0.7),
+    passage("doc:KB-BILL-003#c001", "退款在 3 个工作日内原路退回。", 0.5),
+)
 
 
 def completion(content: str | None) -> ChatCompletion:
@@ -52,7 +80,7 @@ class ScriptedModel:
     async def invoke(self, request: JsonObject, emit: ChunkSink) -> ChatCompletion:
         _ = request
         result = self.responses.pop(0)
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):  # 取消（BaseException）也能注入
             raise result
         content = result.choices[0].message.content
         if content:
