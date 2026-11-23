@@ -1290,9 +1290,19 @@ def synthesize_node(
                 )
 
         resolved = await decide()
-        # 010 断言校验单点接线（T015）：统一出口（编造核对 + 引用标记校验）之后、
-        # 发布之前。轮次预算耗尽时 gate 内部按 fail-open 口径跳过校验并记录事件；
-        # 校验调用不挤占 worker 工具预算（specs/009 FR-9 口径不变）。
+        invented = sorted({name for name in record_ids(resolved.text) if name not in shared.seen})
+        if invented:
+            # 编造引用核对（SC-4）：shared.seen 收着用户给出与工具返回过的全部编号，
+            # 对不上的回传纠正后重试一次；重试仍编造则接受，由界面据证据清单标注。
+            messages.append(
+                {"role": "system", "content": DISPUTE.format(names="、".join(invented))}
+            )
+            resolved = await decide()
+        # 010 断言校验单点接线（T015；审查 P1-3 清偿）：移到编造核对的 DISPUTE
+        # 收敛之后、发布之前——重试作答同样过 gate，避免重试路径零校验发布与
+        # 首答判定事件/发布文本错位（回放侧草稿是 DISPUTE 终态，同构口径）。
+        # 轮次预算耗尽时 gate 内部按 fail-open 口径跳过校验并记录事件；校验
+        # 调用不挤占 worker 工具预算（specs/009 FR-9 口径不变）。
         gated_text = await gate_response(
             resolved.text,
             gate,
@@ -1304,14 +1314,6 @@ def synthesize_node(
         )
         if gated_text != resolved.text:
             resolved = replace(resolved, text=gated_text)
-        invented = sorted({name for name in record_ids(resolved.text) if name not in shared.seen})
-        if invented:
-            # 编造引用核对（SC-4）：shared.seen 收着用户给出与工具返回过的全部编号，
-            # 对不上的回传纠正后重试一次；重试仍编造则接受，由界面据证据清单标注。
-            messages.append(
-                {"role": "system", "content": DISPUTE.format(names="、".join(invented))}
-            )
-            resolved = await decide()
         # 状态与事件都只针对最终采纳的决策：首轮被丢弃时不得污染 asked_topics。
         if resolved.waiting:
             shared.clarification.mark_asked(list(resolved.topics), list(resolved.conditions))

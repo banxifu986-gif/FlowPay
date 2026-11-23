@@ -328,3 +328,26 @@ def test_gate_assembly_wiring_enabled_and_disabled() -> None:
     assert workflow.assertion_gate is gate
     off = SimpleNamespace(assertion_audit_enabled=False, assertion_audit_evidence_budget=8000)
     assert gate_from_settings(off, auditor=StubAuditor(fixture_audit())) is None
+
+
+async def test_dispute_retry_passes_gate(tmp_path: Path) -> None:
+    """审查 P1-3：DISPUTE 重试作答同样过 gate——重试路径零校验发布的缝堵上。
+
+    首轮草稿含 seen 外编号（编造核对触发重试）；重试文本被 gate 处置发布，
+    audit 恰一次且发生在收敛之后（处置锚点是重试文本的句子）。
+    """
+    auditor = StubAuditor(fixture_audit())
+    gate = AssertionGate(enabled=True, auditor=cast_auditor(auditor))
+    invented = (
+        "订单 pay_bg_001_0003 已入账，见 [doc:KB-TS-012#c001]。"  # seen 外编号触发 DISPUTE
+    )
+    model = Model()
+    model.responses = [
+        completion(calls=answer_decision(f"{DRAFT}\n\n{invented}")),
+        completion(calls=answer_decision(DRAFT)),  # 重试：干净文本
+    ]
+    answer, events = await run_synthesize(tmp_path, model, gate)
+    assert len(model.requests) == 2  # 编造核对重试确实发生
+    assert answer == f"{REVISION}\n\n{DOWNGRADED}"  # 重试文本经 gate 处置发布
+    payloads = audit_events(events)
+    assert len(payloads) == 1 and payloads[0]["fail_open"] is False
