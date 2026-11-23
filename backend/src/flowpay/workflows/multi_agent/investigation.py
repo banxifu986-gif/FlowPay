@@ -336,11 +336,14 @@ class ResponseArguments(BaseModel):
 
     @model_validator(mode="after")
     def require_body_for_mode(self) -> ResponseArguments:
-        """模式决定必填正文：作答要有答案，追问要有问题。"""
+        """模式决定必填正文：作答要有答案；追问的问题允许为空（空缺项收敛）。
+
+        question 为空的 clarify 不再整体判非法：2026-11-23 e2e 实测模型会发出
+        缺项与问题全空的 clarify 决策，此前在这里被丢弃走回退，正文形态不可见、
+        收敛逻辑无从生效；是否还有真实追问内容由 _resolve_decision 判定。
+        """
         if self.mode == "answer" and not self.answer.strip():
             raise ValueError("mode=answer 时 answer 不能为空")
-        if self.mode == "clarify" and not self.question.strip():
-            raise ValueError("mode=clarify 时 question 不能为空")
         return self
 
 
@@ -563,6 +566,20 @@ def _resolve_decision(
             has_reports=has_reports,
         )
     topics, conditions = missing_requirements(shared, decision, bound)
+    if not topics and not conditions and not decision.question.strip():
+        # 空缺项 clarify 收敛为作答（2026-11-23 e2e 实测）：缺项过滤后全空且没有
+        # 任何要向用户发问的内容时，clarify_body 拼出的只剩结论摘要——按追问轮
+        # 发布会话停在等待态，且作答从未流经校验门（开启态 audit 覆盖的豁口）。
+        # 收敛为 answer 让正文自然流经既有单点 gate_response；只要还有真实追问
+        # 内容（缺项非空或 question 非空）就维持 clarify/waiting，spec「澄清追问
+        # 不校验」口径不变。
+        return ResolvedResponse(
+            text=clarify_body(shared, reports, decision, bound),
+            waiting=False,
+            mode="answer",
+            source="model",
+            has_reports=has_reports,
+        )
     return ResolvedResponse(
         text=clarify_body(shared, reports, decision, bound),
         waiting=True,
@@ -1301,6 +1318,14 @@ def synthesize_node(
                     shared, state["reports"], completion, runtime.scope_overrides
                 )
             except ModelOutputError:
+                # FR-12 诚实占位也是作答类发布（waiting=False）：此处不借
+                # resolve_response 落地，但返回值照常进入 node 的公共发布路径
+                # （编造核对 + gate_response 单点），不得给占位加豁免——否则
+                # 开启态零 assertion.audit、零校验，违反 FR-7 单点口径
+                # （2026-11-23 e2e 实测 FP-4012 类预算耗尽轮占位形态后拍板）。
+                # 占位句子多为查询摘要行，由零断言放行口径覆盖，不发生校验器
+                # 调用；个别带引用断言句照常送校验器（test_assertion_gate
+                # 的占位过门回归固化为门禁）。
                 return audited_response(
                     ResolvedResponse(
                         text=degraded_answer(state["reports"]),

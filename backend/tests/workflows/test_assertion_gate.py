@@ -18,7 +18,7 @@ from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.event_log.types import Event
 from flowpay.core.execution.contracts import TurnInput
 from flowpay.core.execution.runtime import AgentRuntime
-from flowpay.core.json import JsonObject, require_list, require_object
+from flowpay.core.json import JsonObject, require_list, require_object, require_text
 from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.llm.embedding.ollama import retrieval_input
 from flowpay.core.verify import (
@@ -51,6 +51,7 @@ from flowpay.workflows.multi_agent.simple import NO_EVIDENCE, chitchat_node, doc
 from flowpay.workflows.multi_agent.state import (
     GraphState,
     SharedTurn,
+    WorkerReport,
     restore_record_excerpts,
 )
 
@@ -160,6 +161,7 @@ async def run_synthesize(
     model: Model,
     gate: AssertionGate | None = None,
     shared: SharedTurn | None = None,
+    reports: Sequence[WorkerReport] | None = None,
 ) -> tuple[str, list[Event]]:
     """跑一次 synthesize 节点：返回发布文本与会话全部事件。"""
     store = EventStore(tmp_path / "events.sqlite")
@@ -171,7 +173,7 @@ async def run_synthesize(
         "saved_state": {},
         "intent": "",
         "tasks": [],
-        "reports": [],
+        "reports": list(reports or ()),
         "answer": "",
         "waiting": False,
     }
@@ -298,6 +300,148 @@ async def test_waiting_turn_is_not_gated(tmp_path: Path) -> None:
     assert audit_events(events) == []
 
 
+async def test_degraded_placeholder_finish_passes_gate(tmp_path: Path) -> None:
+    """FR-12 占位完成同样过校验门：占位也是作答类发布，不豁免单点 gate。
+
+    双空输出占位（waiting=False）与其他作答同一发布路径：009 引用校验降级
+    无引用断言句后落 assertion.audit 事件；占位句子多为查询摘要行（非带引用
+    断言句），由零断言放行口径覆盖——零判定事件、不发生校验器调用（spec 边界）。
+    """
+    auditor = StubAuditor(fixture_audit())
+    gate = AssertionGate(enabled=True, auditor=cast_auditor(auditor))
+    reports = [WorkerReport("docs", "重试策略为禁用端点。")]  # 无引用断言句
+    model = Model()
+    model.responses = [completion(None), completion(None)]
+    answer, events = await run_synthesize(tmp_path, model, gate, reports=reports)
+    # 占位完成照常发布：已查结论 + 统一未能核实口径。
+    assert "已查到的结论" in answer
+    assert "未能核实的部分" in answer
+    # 报告里的无引用断言句经 009 引用校验降级后才进占位正文。
+    assert "未能核实：重试策略为禁用端点。" in answer
+    # 占位正文流经 gate：落一次零判定事件，不发生校验器调用。
+    payloads = audit_events(events)
+    assert len(payloads) == 1
+    assert payloads[0]["fail_open"] is False
+    assert require_list(payloads[0]["verdicts"]) == []
+    assert auditor.inputs == []
+
+
+async def test_degraded_placeholder_cited_sentence_is_verified(tmp_path: Path) -> None:
+    """占位里构成带引用断言句的句子照常送校验器判定（诚实口径，零豁免）。
+
+    报告编号已并入 shared.seen（degraded_answer 契约），占位正文的编造核对
+    不误拦——直接发布、句子进校验器，防有人给占位路径加豁免时静默回归。
+    """
+    auditor = StubAuditor(
+        AssertionAudit(
+            verdicts=(
+                AssertionVerdict(
+                    assertion=Assertion(text="扣款已成功 pay_bg_001_0003。"),
+                    verdict="supported",
+                ),
+            ),
+        )
+    )
+    gate = AssertionGate(enabled=True, auditor=cast_auditor(auditor))
+    shared = SharedTurn()
+    shared.seen.add("pay_bg_001_0003")  # 报告里的记录编号早已在案
+    reports = [WorkerReport("docs", "扣款已成功 pay_bg_001_0003，见 [doc:KB-TS-012#c001]。")]
+    model = Model()
+    model.responses = [completion(None), completion(None)]
+    answer, events = await run_synthesize(tmp_path, model, gate, shared, reports)
+    assert "已查到的结论" in answer and "未能核实的部分" in answer
+    # supported 无处置：带引用断言句原样放行，且确实送进了校验器。
+    assert "扣款已成功 pay_bg_001_0003" in answer
+    text, question, _ = auditor.inputs[0]
+    assert "扣款已成功 pay_bg_001_0003" in text
+    assert question == "FP-4041 是什么？"
+    payloads = audit_events(events)
+    assert len(payloads) == 1 and payloads[0]["fail_open"] is False
+    verdicts = require_list(payloads[0]["verdicts"])
+    assert len(verdicts) == 1
+    assert require_object(verdicts[0])["verdict"] == "supported"
+
+
+async def test_degraded_placeholder_gate_off_zero_events(tmp_path: Path) -> None:
+    """关闭态（gate=None 与 enabled=False）：占位照常发布，零 audit 事件（SC-1）。"""
+    for gate in (None, AssertionGate(enabled=False)):
+        model = Model()
+        model.responses = [completion(None), completion(None)]
+        answer, events = await run_synthesize(
+            tmp_path, model, gate, reports=[WorkerReport("docs", "重试策略为禁用端点。")]
+        )
+        assert "已查到的结论" in answer and "未能核实的部分" in answer
+        assert audit_events(events) == []
+        # 零额外模型调用：只有两次决策请求。
+        assert len(model.requests) == 2
+
+
+async def test_empty_clarify_converges_to_answer_and_gated(tmp_path: Path) -> None:
+    """空缺项 clarify（缺项与问题全空）收敛为 answer：正文过 gate 并落 audit 事件。
+
+    2026-11-23 e2e 实测：模型选 clarify 但缺项过滤后全空、问题为空，拼出的正文
+    是完整调查结论却被当 waiting 轮零校验发布、会话停在等待态——收敛后作答
+    统一过门（specs/010 US3），防「开启态 audit 覆盖」在该形态下的豁口。
+    """
+    auditor = StubAuditor(
+        AssertionAudit(
+            verdicts=(
+                AssertionVerdict(
+                    assertion=Assertion(
+                        text="支付已成功，见 [doc:KB-TS-012#c001]。",
+                    ),
+                    verdict="supported",
+                ),
+            ),
+        )
+    )
+    gate = AssertionGate(enabled=True, auditor=cast_auditor(auditor))
+    decision: list[JsonObject] = [
+        {
+            "id": "decision_1",
+            "type": "function",
+            "function": {
+                "name": "set_response",
+                "arguments": json.dumps(
+                    {"mode": "clarify", "question": "", "topics": [], "conditions": []}
+                ),
+            },
+        }
+    ]
+    reports = [WorkerReport("sql", "### 调查结论\n\n支付已成功，见 [doc:KB-TS-012#c001]。")]
+    shared = SharedTurn()
+    model = Model()
+    model.responses = [completion(calls=decision)]
+    answer, events = await run_synthesize(tmp_path, model, gate, shared, reports)
+    # 落地为作答：正文是结论摘要（不含追问段），不再等待。
+    body = "已查到的结论：\n- ### 调查结论\n\n支付已成功，见 [doc:KB-TS-012#c001]。"
+    assert answer == body
+    assert "还需你补充" not in answer
+    # 收敛后的作答统一过门：校验器收到句级筛选后的断言与本轮问题
+    # （整段正文在句号前是单句，作为带引用断言句整句送校验）。
+    text, question, passage_count = auditor.inputs[0]
+    assert text == body
+    assert question == "FP-4041 是什么？"
+    assert passage_count == 0
+    payloads = audit_events(events)
+    assert len(payloads) == 1
+    payload = payloads[0]
+    assert payload["fail_open"] is False
+    verdicts = require_list(payload["verdicts"])
+    assert len(verdicts) == 1
+    assert require_object(verdicts[0])["verdict"] == "supported"
+    # 决策事件载荷按落地后的 mode 记录；收敛为 answer 不写 asked_*（用户没被问）。
+    decided = [
+        require_object(event["payload"])
+        for event in events
+        if event["type"] == "clarification.decided"
+    ]
+    assert len(decided) == 1
+    assert require_text(decided[0]["mode"]) == "answer"
+    assert shared.clarification.asked_topics == []
+    assert shared.clarification.asked_conditions == []
+
+
 async def test_gate_response_unit_paths(tmp_path: Path) -> None:
     """gate_response 的关闭/降级/回填路径（单元级）：事件载体与幂等回填。"""
     store = EventStore(tmp_path / "unit.sqlite")
@@ -367,9 +511,7 @@ async def test_dispute_retry_passes_gate(tmp_path: Path) -> None:
     """
     auditor = StubAuditor(fixture_audit())
     gate = AssertionGate(enabled=True, auditor=cast_auditor(auditor))
-    invented = (
-        "订单 pay_bg_001_0003 已入账，见 [doc:KB-TS-012#c001]。"  # seen 外编号触发 DISPUTE
-    )
+    invented = "订单 pay_bg_001_0003 已入账，见 [doc:KB-TS-012#c001]。"  # seen 外编号触发 DISPUTE
     model = Model()
     model.responses = [
         completion(calls=answer_decision(f"{DRAFT}\n\n{invented}")),
@@ -543,10 +685,7 @@ def test_register_record_excerpts_clips_single_entry() -> None:
 def test_register_record_excerpts_evicts_oldest_by_count() -> None:
     """条数超限：从最早登记的编号开始淘汰，最新登记保留。"""
     pool: dict[str, str] = {}
-    rows = [
-        {"payment_id": f"pay_bg_{index:04d}_0001"}
-        for index in range(RECORD_EXCERPTS_MAX + 10)
-    ]
+    rows = [{"payment_id": f"pay_bg_{index:04d}_0001"} for index in range(RECORD_EXCERPTS_MAX + 10)]
     register_record_excerpts(pool, rows)
     assert len(pool) == RECORD_EXCERPTS_MAX
     assert "pay_bg_0000_0001" not in pool  # 最旧的先淘汰
@@ -629,9 +768,7 @@ async def test_record_excerpt_reaches_semantic_verification(tmp_path: Path) -> N
                 ensure_ascii=False,
             )
         ),
-        completion(
-            json.dumps({"verdicts": [{"text": RECORD_DRAFT, "verdict": "supported"}]})
-        ),
+        completion(json.dumps({"verdicts": [{"text": RECORD_DRAFT, "verdict": "supported"}]})),
     ]
     gate = AssertionGate(enabled=True, auditor=ModelAuditor(model, evidence_budget=8000))
     answer, events = await run_synthesize(tmp_path, model, gate, shared)

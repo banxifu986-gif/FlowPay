@@ -76,6 +76,25 @@ P1×3 已由子 Agent 按 TDD 清偿（容器内全量 724 passed, 5 skipped，r
 
 复测后 `local.toml` 开关已恢复 false（与 HEAD 零差异）。
 
+## 清偿后回归复测（2026-11-23 晚，P1×3 + 提示词卫生提交后）
+
+覆盖面：关闭态对照（A 重测）+ 开启态多轮追问（C 重测）+ 开启态两路径提示词卫生。事件导出归档 `e2e-assets/e2e_off1.jsonl`、`e2e_hygiene1/2.jsonl`、`e2e_c3/c4.jsonl`。
+
+- **关闭态（开关 false，会话 session_41d1…）**：2 轮（docs + 排查）、8 次 model.request，`assertion.audit`=0（SC-1 零回归），**0 请求含 `specs/`、0 请求含异常文本**——提示词卫生在关闭基线同样生效。
+- **开启态两路径**（session_0558… / session_06d6…）：docs 直答 audit 1 条（2 supported）、排查路径 audit 1 条（摘录四类全装配），全部 model.request 0 规范编号 0 异常文本。
+- **开启态多轮追问**（session_ca0e…，4 轮）：追问轮（含真追问与空缺项 clarify）零 audit、会话不崩、前端事件投影正常；全部 20 次 model.request 0 规范编号 0 异常文本。本会话 4 轮全部以 clarify 收敛——**P2-a 已部分清偿**：缺项与问题全空的形态收敛为 answer 过 gate；实测中 question 非空的形态（模型反问用户原始记录）按 spec「澄清追问不校验」维持豁免，**Ban 拍板维持现状**，留评测臂数据判断（spec.md 清偿小节已回写）。
+- 判定质量观察：记录支撑类断言在摘录在场时仍可能因「计数不可证」判 insufficient（宁可降级口径，SC-6 评测臂前应确认容忍度）。
+
+## 多层面扩展实测（2026-11-24，开启态）
+
+覆盖 chitchat / 零命中 / 反馈闭环 / 刷新恢复 / 商户边界五个此前未测层面（内部账号 session_ca0e… + 商户账号 session_e900…；导出归档 `e2e_l1/l4/m1/m2.jsonl`）：
+
+- **chitchat**（P1-1 接线后首测）：闲聊回答正常发布，`assertion.audit` 零判定事件（fail_open=False、verdicts=[]），零校验器调用。
+- **检索低分片段下的诚实回答**：检索非零命中但无相关内容时，模型明确「未能在片段中找到」，未证实口径句豁免、零判定 audit（未触发 NO_EVIDENCE 直答形态，属检索语义而非门行为）。
+- **反馈闭环**：👍 → `feedback.received`（rating=up）与开启态事件并存，互不干扰。
+- **刷新恢复**：页面 reload 后重连、会话恢复投影完整；恢复轮追问正常作答，audit 出真实判定（supported+insufficient），恢复链路卫生 0 命中。
+- **商户态**：docs 轮 audit 出真实 `partial`→降级（「未能核实：默认在首次失败后…」）；排查轮 BOUND_HINT 绑定说明出现在 2 次模型请求、全部请求 **0 个他账户编号**（scope 边界）、0 规范编号；商户登录无法访问内部会话（Session not found 提示，边界正确）。
+
 ## 结论
 
 开关机制、事件通道、发布处置与前端投影在线路径可用。首测发现的三处结构性缺口（docs 直答绕过校验门、预算耗尽 fail-open 常态化、在线摘录缺失致记录支撑断言必降级）已于同日清偿并复测确认生效，开启态评测臂（SC-6）的路径前提已具备。

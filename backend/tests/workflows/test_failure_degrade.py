@@ -457,6 +457,53 @@ def test_resolve_response_pending_takes_clarify_priority_on_empty_output() -> No
     assert resolved.mode == "clarify"
 
 
+# --- specs/010 空缺项 clarify 收敛（2026-11-23 e2e 实测）：缺项与问题全空的
+# clarify 决策按作答落地，正文流经既有校验门；防回归锁住两类真实追问形态。
+
+
+def _conclusion_reports() -> list[WorkerReport]:
+    """一段结论式调查报告：句子自带引用标记，不触发 009 引用降级。"""
+    return [WorkerReport("sql", "### 调查结论\n\n支付状态见 [doc:KB-TS-012#c001]。")]
+
+
+def test_resolve_response_empty_clarify_converges_to_answer() -> None:
+    """缺项与问题全空的 clarify 按作答落地：waiting=False、正文为结论摘要。"""
+    shared = SharedTurn()
+    resolved = resolve_response(
+        shared, _conclusion_reports(), completion(calls=[response_call("clarify", question="")])
+    )
+    assert resolved.waiting is False
+    assert resolved.mode == "answer"
+    assert resolved.source == "model"
+    # 正文是 clarify_body 的结论摘要形态，不含追问段。
+    assert "已查到的结论" in resolved.text
+    assert "还需你补充" not in resolved.text
+
+
+def test_resolve_response_clarify_with_question_keeps_waiting() -> None:
+    """缺项全空但模型问题非空：仍是真实追问内容，维持 clarify/waiting 现状。"""
+    shared = SharedTurn()
+    resolved = resolve_response(
+        shared,
+        _conclusion_reports(),
+        completion(calls=[response_call("clarify", question="请提供接收端访问日志。")]),
+    )
+    assert resolved.waiting is True
+    assert resolved.mode == "clarify"
+
+
+def test_resolve_response_clarify_with_pending_keeps_waiting() -> None:
+    """缺项非空（pending 待回复）时维持 clarify/waiting：即使问题为空也不收敛。"""
+    shared = SharedTurn()
+    shared.pending.append(ClarificationRequest(conditions=("account_id",), question="请提供账户"))
+    resolved = resolve_response(
+        shared, [], completion(calls=[response_call("clarify", question="")])
+    )
+    assert resolved.waiting is True
+    assert resolved.mode == "clarify"
+    assert "还需你补充" in resolved.text
+
+
 async def test_synthesize_empty_output_retries_once_then_answers(tmp_path: Path) -> None:
     """FR-12（SC-2）：synthesize 空输出 → model.retry 恰一次 → 重试后作答，无 run.failed。"""
     model = Model()

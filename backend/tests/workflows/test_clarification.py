@@ -783,11 +783,18 @@ def test_read_response_rejects_invalid_mode() -> None:
 
 
 def test_read_response_requires_text_for_each_mode() -> None:
-    """answer 模式缺正文、clarify 模式缺问题都按未调用处理。"""
+    """answer 模式缺正文按未调用处理；clarify 缺问题不再整体判非法（空缺项收敛）。
+
+    2026-11-23 e2e 实测：空缺项 clarify（mode=clarify 但缺项与问题全空）此前被
+    校验器整体拒绝、决策被丢弃走回退，收敛逻辑无从生效；放宽后由决策落地层
+    （_resolve_decision）按缺项与问题是否全空决定 waiting/answer。
+    """
     from flowpay.workflows.multi_agent.investigation import read_response
 
     assert read_response(completion(calls=[response_call("answer", question="只有问题")])) is None
-    assert read_response(completion(calls=[response_call("clarify", answer="只有正文")])) is None
+    decision = read_response(completion(calls=[response_call("clarify", answer="只有正文")]))
+    assert decision is not None
+    assert decision.mode == "clarify"
 
 
 def test_read_response_without_tool_call_is_none() -> None:
