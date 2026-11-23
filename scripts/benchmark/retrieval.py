@@ -821,9 +821,11 @@ def second_hop_audit(arm: Path) -> tuple[int, int, list[str]]:
     """第二跳机制抽查（specs/009 SC-7/T028）：臂数据里第二跳检索是否携带第一跳结论值。
 
     按会话顺序读事件库：`source.request` 的查询参数（第一跳业务查询）里出现过的
-    记录编号，是否也出现在该会话后续的 `knowledge.request` 查询文本里。返回
-    （带编号的检索查询数，检索查询总数，缺失样例）。第一跳没有产生任何编号的
-    会话不参与计数——单跳任务与无第一跳结论时不拼接，行为不变（FR-10）。
+    记录编号，是否也出现在该会话**在其之后**发出的 `knowledge.request` 查询文本里。
+    返回（带编号的检索查询数，被审计的检索查询总数，缺失样例）。第一跳之前的
+    检索不参与计数——Send 并行时文档检索可以先于业务查询发出，此时不存在可携带
+    的第一跳结论值，计入只会制造假 miss（2026-11-23 审查 M1）。第一跳没有产生
+    任何编号的会话同样不参与——单跳任务与无第一跳结论时不拼接，行为不变（FR-10）。
     """
     path = arm / "multi-agent" / "sessions.sqlite"
     if not path.exists():
@@ -838,6 +840,7 @@ def second_hop_audit(arm: Path) -> tuple[int, int, list[str]]:
         )
     seen_ids: dict[str, set[str]] = {}
     queries: dict[str, list[str]] = {}
+    first_hop_seen: set[str] = set()
     for session_id, _seq, kind, data in rows:
         payload = require_object(parse_json(require_text(data)))["payload"]
         payload = require_object(payload)
@@ -845,8 +848,11 @@ def second_hop_audit(arm: Path) -> tuple[int, int, list[str]]:
             parameters = require_object(payload.get("parameters") or {})
             values = set(record_ids(" ".join(str(v) for v in parameters.values())))
             seen_ids.setdefault(session_id, set()).update(values)
+            first_hop_seen.add(session_id)
             continue
-        queries.setdefault(session_id, []).append(require_text(payload["query"]))
+        # 只审计第一跳之后的检索查询：第二跳的定义就是携带已发生的第一跳结论。
+        if session_id in first_hop_seen:
+            queries.setdefault(session_id, []).append(require_text(payload["query"]))
     audited = 0
     misses: list[str] = []
     for session_id, session_queries in queries.items():
@@ -868,6 +874,7 @@ class Arguments(argparse.Namespace):
     config: Path = ROOT / "backend/configs/local.toml"
     observed_arm: Path | None = None
     answers_arm: Path | None = None
+    second_hop_audit_arm: Path | None = None
     output: Path | None = None
 
 
@@ -888,8 +895,21 @@ def main() -> None:
         default=None,
         help="新臂目录：用最终检查点的 clarification.answers 构造 actual 口径（SC-5）",
     )
+    parser.add_argument(
+        "--second-hop-audit",
+        type=Path,
+        default=None,
+        dest="second_hop_audit_arm",
+        help="臂数据目录：只跑第二跳机制抽查（SC-7/T028），不做检索诊断",
+    )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args(namespace=Arguments())
+    if args.second_hop_audit_arm is not None:
+        hits, total, misses = second_hop_audit(args.second_hop_audit_arm)
+        print(f"第二跳机制抽查：{hits}/{total} 的检索查询携带第一跳结论值")
+        for miss in misses:
+            print(f"  miss：{miss}")
+        return
     report, hybrid = asyncio.run(
         diagnose(
             args.config, args.per_type, args.limit, args.observed_arm, args.answers_arm

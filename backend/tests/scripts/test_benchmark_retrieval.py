@@ -608,3 +608,56 @@ def test_render_reports_actual_when_answers_arm_given() -> None:
     assert "actual" in report
     assert "actual-initial" in report
     assert "通过" in report
+
+
+# --- 第二跳机制抽查（SC-7/T028）：只审计第一跳之后的检索查询（审查 M1） ---
+
+
+def build_audit_arm(root: Path, events: Sequence[tuple[str, str, JsonObject]]) -> Path:
+    """构造 second_hop_audit 用的最小事件臂：按序写入 source/knowledge 请求。"""
+    path = root / "multi-agent" / "sessions.sqlite"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE events (session_id TEXT, seq INTEGER, event_id TEXT UNIQUE,"
+            + " run_id TEXT, type TEXT, data TEXT)"
+        )
+        for seq, (session, kind, payload) in enumerate(events, start=1):
+            db.execute(
+                "INSERT INTO events VALUES (?, ?, ?, NULL, ?, ?)",
+                (session, seq, f"evt_{seq}", kind, json.dumps({"payload": payload})),
+            )
+    return root
+
+
+def test_second_hop_audit_skips_queries_before_first_hop(tmp_path: Path) -> None:
+    """第一跳之前的检索不计入第二跳抽查：Send 并行不制造假 miss。
+
+    会话 A：先文档检索（第一跳未发生，无可携带结论）→ source.request 带编号
+    → 再检索携带编号——只有第二次检索被审计且命中。会话 B 无第一跳，不参与。
+    """
+    arm = build_audit_arm(
+        tmp_path / "arm",
+        [
+            ("s0", "knowledge.request", {"query": "先查的文档检索"}),
+            ("s0", "source.request", {"parameters": {"record": "pay_bg_001_0003"}}),
+            ("s0", "knowledge.request", {"query": "重试 pay_bg_001_0003"}),
+            ("s1", "knowledge.request", {"query": "纯文档会话"}),
+        ],
+    )
+    hits, total, misses = retrieve.second_hop_audit(arm)
+    assert (hits, total, misses) == (1, 1, [])
+
+
+def test_second_hop_audit_reports_misses_after_first_hop(tmp_path: Path) -> None:
+    """第一跳之后的检索缺编号仍计 miss：抽查的判错能力不因收窄而丢失。"""
+    arm = build_audit_arm(
+        tmp_path / "arm",
+        [
+            ("s0", "source.request", {"parameters": {"record": "pay_bg_001_0003"}}),
+            ("s0", "knowledge.request", {"query": "盲查的重试策略"}),
+        ],
+    )
+    hits, total, misses = retrieve.second_hop_audit(arm)
+    assert (hits, total) == (0, 1)
+    assert len(misses) == 1
