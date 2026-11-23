@@ -1,0 +1,57 @@
+[
+ {
+  "schema_version": 1,
+  "event_id": "evt_a01f697111ef4fa1afc92f2ae62f8808",
+  "session_id": "session_aea93fcd5a43421499653d973929dd49",
+  "seq": 609,
+  "run_id": "run_22f7d3cbf4904baa80f8a5faeff5d3e5",
+  "call_id": null,
+  "parent_call_id": null,
+  "timestamp": "2026-11-23T10:24:05.619552+00:00",
+  "type": "assertion.audit",
+  "payload": {
+   "verdicts": [
+    {
+     "text": "支付 `pay_bg_001_0003` 对应事件 `evt_bg_001_0003`，生成了 1 条投递：`del_bg_001_0003`；当前状态为 **retrying**。",
+     "refs": [],
+     "record_ids": [
+      "pay_bg_001_0003",
+      "evt_bg_001_0003",
+      "del_bg_001_0003"
+     ],
+     "verdict": "insufficient"
+    }
+   ],
+   "actions": [
+    {
+     "sentence": "支付 `pay_bg_001_0003` 对应事件 `evt_bg_001_0003`，生成了 1 条投递：`del_bg_001_0003`；当前状态为 **retrying**。",
+     "action": "downgrade",
+     "revision": "未能核实：支付 `pay_bg_001_0003` 对应事件 `evt_bg_001_0003`，生成了 1 条投递：`del_bg_001_0003`；当前状态为 **retrying**。"
+    }
+   ],
+   "fail_open": false,
+   "text": "有生成 Webhook 投递。未能核实：支付 `pay_bg_001_0003` 对应事件 `evt_bg_001_0003`，生成了 1 条投递：`del_bg_001_0003`；当前状态为 **retrying**。未能核实：依据：查询结果显示支付记录 1 行、事件记录 1 行、投递记录 1 行，投递尝试记录 `delivery_attempts` 也有 1 行（line=1）；调查报告确认该投递状态为 retrying。未能核实尝试记录的其他细节。"
+  }
+ },
+ {
+  "schema_version": 1,
+  "event_id": "evt_fbcb7f4868e74316b37829f015381650",
+  "session_id": "session_aea93fcd5a43421499653d973929dd49",
+  "seq": 611,
+  "run_id": "run_22f7d3cbf4904baa80f8a5faeff5d3e5",
+  "call_id": null,
+  "parent_call_id": null,
+  "timestamp": "2026-11-23T10:24:05.704259+00:00",
+  "type": "message.assistant",
+  "payload": {
+   "content": "有生成 Webhook 投递。未能核实：支付 `pay_bg_001_0003` 对应事件 `evt_bg_001_0003`，生成了 1 条投递：`del_bg_001_0003`；当前状态为 **retrying**。未能核实：依据：查询结果显示支付记录 1 行、事件记录 1 行、投递记录 1 行，投递尝试记录 `delivery_attempts` 也有 1 行（line=1）；调查报告确认该投递状态为 retrying。未能核实尝试记录的其他细节。",
+   "evidence": [],
+   "usage": {
+    "model_calls": 7,
+    "input_tokens": 10879,
+    "output_tokens": 411,
+    "total_tokens": 11290
+   }
+  }
+ }
+]
