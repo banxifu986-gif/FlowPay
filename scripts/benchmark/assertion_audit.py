@@ -435,9 +435,17 @@ def check_invented(case: ReplayCase) -> list[str]:
     return sorted({name for name in record_ids(draft) if name not in case.seen})
 
 
-def selected_cases(per_type: int) -> list[JsonObject]:
-    """按 run.sample 口径筛题：每题型前 per_type 道；0 表示全量（--all 口径）。"""
-    return sample(blueprints(), per_type)
+def selected_cases(per_type: int, questions: Sequence[str] | None = None) -> list[JsonObject]:
+    """筛题：显式题单（T019 冒烟口径）优先，否则每题型前 per_type 道（0=全量）。"""
+    rows = blueprints()
+    if questions is not None:
+        wanted = set(questions)
+        chosen = [row for row in rows if require_text(row["question_id"]) in wanted]
+        missing = wanted - {require_text(row["question_id"]) for row in chosen}
+        if missing:
+            raise SystemExit(f"题单中的题号不在题库：{sorted(missing)}")
+        return chosen
+    return sample(rows, per_type)
 
 
 def restore_case(
@@ -1229,6 +1237,7 @@ class Arguments(argparse.Namespace):
     report: Path = Path(".")
     fixture: Path | None = None
     verifier: str | None = None
+    questions: list[str] | None = None
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -1256,20 +1265,33 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--verifier", default=None, help="真实校验器注入（module:attr，无参构造）"
     )
+    parser.add_argument(
+        "--questions",
+        nargs="+",
+        default=None,
+        help="显式题单（question_id 列表，T019 冒烟口径）；与 --sample/--all 互斥",
+    )
     args = cast("Arguments", parser.parse_args(argv))
-    if args.all:
+    if args.questions is not None:
+        if args.all or args.sample != 1:
+            parser.error("--questions 与 --sample/--all 互斥")
+        # 显式题单：恢复层全量恢复再过滤（per_type 抽样语义不适用）。
+        per_type = 0
+    elif args.all:
         if args.sample != 1:
             parser.error("--all 与 --sample 互斥")
         per_type = 0
     else:
         per_type = args.sample
     cases = replay_arm(args.arm, per_type)
+    if args.questions is not None:
+        cases = [case for case in cases if case.question_id in set(args.questions)]
     required = {
         require_text(case["question_id"]): required_assertions(case)
-        for case in selected_cases(per_type)
+        for case in selected_cases(per_type, args.questions)
     }
     expected = expected_evidence_map(
-        require_text(c["question_id"]) for c in selected_cases(per_type)
+        require_text(c["question_id"]) for c in selected_cases(per_type, args.questions)
     )
     verifier = load_verifier(args.verifier, load_fixture(args.fixture))
     rows = asyncio.run(audit_arm(cases, verifier, required, expected))
