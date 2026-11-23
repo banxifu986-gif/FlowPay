@@ -4,6 +4,11 @@ LangGraph 只负责一轮内部的节点编排（路由、调度、汇总）；�
 saved_state 通道，图状态在轮末组装为检查点，轮内不引入 checkpointer。
 """
 
+from .assertion_gate import AssertionAuditor, AssertionGate
 from .graph import MultiAgentWorkflow
 
-__all__ = ["MultiAgentWorkflow"]
+__all__ = [
+    "AssertionAuditor",
+    "AssertionGate",
+    "MultiAgentWorkflow",
+]
