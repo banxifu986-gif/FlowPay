@@ -435,19 +435,6 @@ def check_invented(case: ReplayCase) -> list[str]:
     return sorted({name for name in record_ids(draft) if name not in case.seen})
 
 
-def selected_cases(per_type: int, questions: Sequence[str] | None = None) -> list[JsonObject]:
-    """筛题：显式题单（T019 冒烟口径）优先，否则每题型前 per_type 道（0=全量）。"""
-    rows = blueprints()
-    if questions is not None:
-        wanted = set(questions)
-        chosen = [row for row in rows if require_text(row["question_id"]) in wanted]
-        missing = wanted - {require_text(row["question_id"]) for row in chosen}
-        if missing:
-            raise SystemExit(f"题单中的题号不在题库：{sorted(missing)}")
-        return chosen
-    return sample(rows, per_type)
-
-
 def restore_case(
     row: Row,
     case: JsonObject,
@@ -504,21 +491,44 @@ def restore_case(
     )
 
 
-def replay_arm(arm: Path, per_type: int) -> list[ReplayCase]:
-    """回放一个臂：逐题恢复回放输入；输出顺序与题库筛选顺序一致。"""
-    cases = selected_cases(per_type)
+def replay_arm(
+    arm: Path, per_type: int, questions: Sequence[str] | None = None
+) -> list[ReplayCase]:
+    """回放一个臂：以臂结果题集为权威逐题恢复（审查 P1-1 清偿）。
+
+    --all（per_type=0）= 臂内全部题（R96B 96 题），不是题库 300 全量——臂是
+    评测事实源，blueprints 只提供回放输入的 blueprint 侧（必需断言/期望证据
+    映射在 main 按回放题号查询）；显式题单（--questions）内臂缺题保留报错：
+    题单指错题号要暴露，不静默跳过。抽样口径（per_type>0）沿用题库行序的
+    每题型前 N 道（与臂生成时的 run.sample 同口径）；抽出的题臂缺失属数据
+    不一致，显式报错。
+    """
     sessions = read_session_events(arm)
-    matched = match_sessions(cases, sessions)
-    rows = {row.question_id: row for row in load_rows(arm)}
+    rows_by_id = {row.question_id: row for row in load_rows(arm)}
+    library = {require_text(case["question_id"]): case for case in blueprints()}
+    if questions is not None:
+        order = list(dict.fromkeys(questions))
+        absent = [q for q in order if q not in rows_by_id]
+        if absent:
+            raise SystemExit(f"臂结果缺题单题目：{absent}")
+    elif per_type:
+        order = [
+            require_text(case["question_id"]) for case in sample(list(library.values()), per_type)
+        ]
+    else:
+        order = list(rows_by_id)
+    unmatched = [q for q in order if q not in library]
+    if unmatched:
+        raise ValueError(f"{arm} 的题号不在题库：{unmatched[:5]}")
+    missing = [q for q in order if q not in rows_by_id]
+    if missing:
+        raise ValueError(f"{arm} 结果文件缺题 {missing[:5]}")
+    matched = match_sessions([library[q] for q in order], sessions)
     result: list[ReplayCase] = []
-    for case in cases:
-        question_id = require_text(case["question_id"])
-        row = rows.get(question_id)
-        if row is None:
-            raise ValueError(f"{arm} 结果文件缺题 {question_id}")
+    for question_id in order:
         session_id = matched.get(question_id)
         events = sessions.get(session_id) if session_id is not None else None
-        result.append(restore_case(row, case, session_id, events))
+        result.append(restore_case(rows_by_id[question_id], library[question_id], session_id, events))
     return result
 
 
@@ -1254,7 +1264,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--sample", type=int, default=1, help="每题型抽题数（run.sample 口径）；默认 1"
     )
     parser.add_argument(
-        "--all", action="store_true", help="全量回放（96 题量级，批准门后执行）"
+        "--all", action="store_true", help="全量回放（臂内全部题，批准门后执行）"
     )
     parser.add_argument(
         "--report", type=Path, required=True, help="输出目录；写入判定 JSONL 与汇总报告"
@@ -1275,23 +1285,23 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.questions is not None:
         if args.all or args.sample != 1:
             parser.error("--questions 与 --sample/--all 互斥")
-        # 显式题单：恢复层全量恢复再过滤（per_type 抽样语义不适用）。
-        per_type = 0
+        per_type = 1  # 仅占位：questions 模式下抽样路径不走（replay_arm 题单分支）
     elif args.all:
         if args.sample != 1:
             parser.error("--all 与 --sample 互斥")
         per_type = 0
     else:
         per_type = args.sample
-    cases = replay_arm(args.arm, per_type)
-    if args.questions is not None:
-        cases = [case for case in cases if case.question_id in set(args.questions)]
+    cases = replay_arm(args.arm, per_type, args.questions)
+    # 必需断言/期望证据按回放题号查询题库：臂是题集事实源（P1-1），blueprints
+    # 只供 blueprint 侧字段（required/expected），不再展开题库全量。
+    by_id = {require_text(c["question_id"]): c for c in blueprints()}
+    picked = [by_id[case.question_id] for case in cases]
     required = {
-        require_text(case["question_id"]): required_assertions(case)
-        for case in selected_cases(per_type, args.questions)
+        require_text(c["question_id"]): required_assertions(c) for c in picked
     }
     expected = expected_evidence_map(
-        require_text(c["question_id"]) for c in selected_cases(per_type, args.questions)
+        require_text(c["question_id"]) for c in picked
     )
     verifier = load_verifier(args.verifier, load_fixture(args.fixture))
     rows = asyncio.run(audit_arm(cases, verifier, required, expected))

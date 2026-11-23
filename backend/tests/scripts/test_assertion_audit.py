@@ -11,6 +11,8 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from flowpay.core.event_log.types import Event
 from flowpay.core.json import JsonObject, parse_json, require_object
 from flowpay.core.knowledge.contracts import Passage, PassageSource
@@ -22,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.benchmark import assertion_audit  # noqa: E402
 from scripts.benchmark.assertion_audit import (  # noqa: E402
     AuditInput,
     AuditRow,
@@ -165,11 +168,13 @@ def passage_json(**overrides: object) -> JsonObject:
     return payload
 
 
-def build_arm(root: Path, session_id: str, events: list[Event]) -> Path:
+def build_arm(
+    root: Path, session_id: str, events: list[Event], question_id: str = "FP-BM-SR-0001"
+) -> Path:
     """构造最小验收臂：multi-agent.jsonl + sessions.sqlite 的 events 表。"""
     (root / "multi-agent").mkdir(parents=True)
     result: JsonObject = {
-        "question_id": "FP-BM-SR-0001",
+        "question_id": question_id,
         "question_type": "simple_retrieval",
         "multi_turn": False,
         "doc_hit": 1,
@@ -633,3 +638,64 @@ def test_breakpoint_summary_aggregates() -> None:
         "FP-BM-SR-0001",
         "FP-BM-SR-0002",
     }
+
+
+# ---- P1-1 清偿回归：恢复层以臂结果题集为权威（审查 2026-11-23）----
+
+
+def test_replay_arm_all_uses_arm_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--all（per_type=0）恢复臂内全部题，不因题库 300 题的缺题报错。
+
+    R96B2 臂只含 R96B 96 题子集，题库 blueprints() 是 300 全量——恢复层以臂
+    行序为事实源，题库只提供 blueprint 侧（修复前 --all 直跑必崩）。
+    """
+    arm = build_arm(tmp_path, "session_fixture", [])
+    monkeypatch.setattr(
+        assertion_audit,
+        "blueprints",
+        lambda: [case("FP-BM-SR-0001"), case("FP-BM-SR-0065", initial="另一题。")],
+    )
+    cases = assertion_audit.replay_arm(arm, 0)
+    assert [item.question_id for item in cases] == ["FP-BM-SR-0001"]
+
+
+def test_replay_arm_questions_missing_in_arm_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显式题单内臂缺题保留报错：题单指错题号要暴露，不静默跳过。"""
+    arm = build_arm(tmp_path, "session_fixture", [])
+    monkeypatch.setattr(
+        assertion_audit,
+        "blueprints",
+        lambda: [case("FP-BM-SR-0001"), case("FP-BM-SR-0065", initial="另一题。")],
+    )
+    with pytest.raises(SystemExit, match="臂结果缺题单题目"):
+        assertion_audit.replay_arm(
+            arm, 1, questions=["FP-BM-SR-0001", "FP-BM-SR-0065"]
+        )
+
+
+def test_replay_arm_questions_missing_in_library_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """题单题不在题库报错：blueprint 侧字段（必需断言/期望证据）无从查询。"""
+    arm = build_arm(tmp_path, "session_fixture", [], question_id="FP-BM-SR-0065")
+    monkeypatch.setattr(assertion_audit, "blueprints", lambda: [case("FP-BM-SR-0001")])
+    with pytest.raises(ValueError, match="不在题库"):
+        assertion_audit.replay_arm(arm, 1, questions=["FP-BM-SR-0065"])
+
+
+def test_replay_arm_sample_arm_gap_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """抽样口径（per_type>0）抽出的题臂缺失仍显式报错：数据不一致要暴露。"""
+    arm = build_arm(tmp_path, "session_fixture", [])
+    monkeypatch.setattr(
+        assertion_audit,
+        "blueprints",
+        lambda: [case("FP-BM-SR-0001"), case("FP-BM-SR-0065", initial="另一题。")],
+    )
+    with pytest.raises(ValueError, match="结果文件缺题"):
+        assertion_audit.replay_arm(arm, 2)
