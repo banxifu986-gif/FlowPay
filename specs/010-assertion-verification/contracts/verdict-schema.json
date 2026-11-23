@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AssertionAudit",
+  "description": "010 逐断言校验共享契约：core/verify（树A 能力侧）产出、assertion_gate 与回放脚本（树B 消费侧）消费。LLM 抽取与批量校验的 JSON 输出解析后映射到本结构；字段语义见 specs/010-assertion-verification/data-model.md 与 spec.md FR-1..FR-6。",
+  "type": "object",
+  "required": ["verdicts", "actions", "fail_open", "text"],
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "description": "逐断言判定清单；空数组 = 无断言放行。",
+      "items": {
+        "type": "object",
+        "required": ["text", "refs", "record_ids", "verdict"],
+        "properties": {
+          "text": { "type": "string", "description": "原子断言文本" },
+          "refs": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^doc:.+#c[0-9]+$|^KB-[A-Za-z0-9-]+#c[0-9]+$" },
+            "description": "依据的片段引用；ID 不存在于本轮证据集时 verdict 强制 insufficient（代码级校验，不经语义判定）"
+          },
+          "record_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "断言涉及的记录编号（记录摘录装配输入）"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["supported", "partial", "contradicted", "insufficient"],
+            "description": "四档判定"
+          },
+          "overreach": {
+            "type": ["object", "null"],
+            "description": "越界定位；partial 必须携带，缺失视同 insufficient（spec FR-4 默认假设）",
+            "properties": {
+              "dimension": { "type": "string", "enum": ["对象", "时间", "数字", "条件"] },
+              "note": { "type": "string", "description": "越界说明：原文支持什么、表述越界到什么" }
+            },
+            "required": ["dimension", "note"]
+          },
+          "revision": {
+            "type": ["string", "null"],
+            "description": "收紧后表述；仅 partial 附带，处置侧再过子集校验"
+          },
+          "conflict": {
+            "type": ["object", "null"],
+            "description": "矛盾详情；仅 contradicted 携带（clarify 拍板：降级+详情落事件，不呈现分歧）",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "冲突双方出处（片段引用或记录编号）"
+              },
+              "point": { "type": "string", "description": "冲突点描述" }
+            },
+            "required": ["sources", "point"]
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "description": "处置动作清单（处置映射纯函数产出）；fail_open 或零断言时为空。",
+      "items": {
+        "type": "object",
+        "required": ["sentence", "action"],
+        "properties": {
+          "sentence": { "type": "string", "description": "被处置的原句全文（句级等值匹配锚点）" },
+          "action": {
+            "type": "string",
+            "enum": ["keep", "replace", "downgrade"],
+            "description": "keep=放行；replace=替换为 revision（须过子集校验，越界降级）；downgrade=未能核实降级"
+          },
+          "revision": { "type": ["string", "null"], "description": "replace 动作的替换文本" },
+          "breakpoint_hint": {
+            "type": ["string", "null"],
+            "description": "评测侧断点提示（overreach/not_recalled/mis_bound/contradicted），仅供回放归类参考，生产侧可忽略"
+          }
+        }
+      }
+    },
+    "fail_open": {
+      "type": "boolean",
+      "description": "校验器任一环节失败（调用/解析/装配/预算耗尽）时 true；此时 text=输入原文、actions 为空"
+    },
+    "text": {
+      "type": "string",
+      "description": "处置后的最终文本；fail_open 或零断言时等于输入原文"
+    }
+  }
+}
