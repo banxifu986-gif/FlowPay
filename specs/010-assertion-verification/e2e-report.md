@@ -60,6 +60,22 @@
 - `local.toml` 的 `assertion_audit_enabled` 已改回 `false` 并提交（注明实测后恢复）。代码零修改。
 - accounts.toml 为实测期重 seed（口令临时），如需恢复原口令由 Ban 用 `scripts/accounts.py seed --force` 重设。
 
+## 清偿复测（2026-11-23，修复后在线实测）
+
+P1×3 已由子 Agent 按 TDD 清偿（容器内全量 724 passed, 5 skipped，ruff/basedpyright 干净），口径经 Ban 拍板：
+
+- **P1-2（拍板：校验与轮次预算解耦）**：`gate_response` 删除预算耗尽跳过分支（校验器调用走独立 ChatClient、不耗轮次预算）；`may_think()` 为 False 时仍完整校验（单测 `test_budget_exhausted_still_verifies` 可证伪覆盖）。
+- **P1-1**：`doc_qa_node`/`chitchat_node`（含零命中 NO_EVIDENCE 直答）统一接 `gate_response`，与 synthesize 同一单点口径。
+- **P1-3（拍板：在线装配真实摘录）**：sql 工具结果按业务编号登记进 `SharedTurn.record_excerpts`（core/verify/excerpts.py，单条 2000 字符/64 条/32000 字符双封顶、淘汰最旧、随检查点跨轮），经 gate→auditor 全链传入。
+
+复测（开启态，内部账号，事件导出 `e2e-assets/e2e_verify1.jsonl`、`e2e_verify2.jsonl`）：
+
+- docs 直答路径（Webhook 重试策略）：**audit 事件出现**，2 条断言全 `supported`，发布文本不变——P1-1 修复生效。
+- 排查路径（pay_bg_001_0003 投递状态）：记录支撑句获得真实语义判定——`partial`（overreach=数字："`line=1`"无证据支持）→ `replace` 收紧为 `attempt_count=1`，发布文本带收紧后表述；不再出现摘录缺失强制 insufficient——P1-3 修复生效。
+- P1-2 的线上形态（worker 耗尽预算的完整排查轮照常校验）由单测覆盖，本轮未重复线上场景（费用考量）。
+
+复测后 `local.toml` 开关已恢复 false（与 HEAD 零差异）。
+
 ## 结论
 
-开关机制、事件通道、发布处置与前端投影在线路径可用；但按实测流量形态，**开启态下多数作答（docs 直答、完整排查、记录支撑类断言）实际未经语义校验**。P1-1/P1-2 修复前，SC-6 开启态评测臂的结论将主要由「校验器基本不参与」的路径构成，建议先清偿再跑评测臂。
+开关机制、事件通道、发布处置与前端投影在线路径可用。首测发现的三处结构性缺口（docs 直答绕过校验门、预算耗尽 fail-open 常态化、在线摘录缺失致记录支撑断言必降级）已于同日清偿并复测确认生效，开启态评测臂（SC-6）的路径前提已具备。
