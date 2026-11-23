@@ -41,6 +41,10 @@ from flowpay.core.json import (
 )
 from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.knowledge.passages import PassageSet
+from flowpay.core.llm.chat.client import ChatClient
+from flowpay.core.llm.chat.contracts import ChatModel
+from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
+from flowpay.core.llm.chat.openai_responses import OpenAiResponsesModel
 from flowpay.core.verify import (
     Assertion,
     AssertionVerdict,
@@ -50,6 +54,71 @@ from flowpay.core.verify import (
     Verdict,
 )
 from flowpay.dataset import require_dataset
+
+
+class _NullSink:
+    """回放侧空事件汇：真实校验器的模型调用不落事件（回放零写入），调用面补齐。"""
+
+    async def emit(
+        self,
+        kind: str,
+        payload: JsonObject,
+        call_id: str | None = None,
+        parent_call_id: str | None = None,
+    ) -> Event:
+        del call_id, parent_call_id
+        return Event(
+            schema_version=1,
+            event_id="",
+            session_id="",
+            seq=0,
+            run_id=None,
+            call_id=None,
+            parent_call_id=None,
+            timestamp="",
+            type=kind,
+            payload=payload,
+        )
+
+
+class CoreVerifier:
+    """T018 真联调：真实 core 校验器的无参工厂（--verifier 注入）。
+
+    复用运营模型配置（bootstrap 先例：responses/chat 协议分流），证据预算取
+    配置默认；判定走 core/verify.errors.audit_response（fail-open 在 core 层
+    兜底——异常时返回空判定，回放侧行如实呈现）。回放不计运营用量
+    （usage_entries 不传），模型调用经 _NullSink 不落事件。
+    """
+
+    def __init__(self) -> None:
+        from flowpay.core.config import load_settings
+
+        settings = load_settings()
+        chat_model: ChatModel = (
+            OpenAiResponsesModel(settings.model)
+            if settings.model.protocol == "responses"
+            else OpenAiChatModel(settings.model)
+        )
+        self._chat: ChatClient = ChatClient(chat_model, _NullSink())
+        self._budget: int = settings.assertion_audit_evidence_budget
+
+    async def audit(self, request: AuditInput) -> tuple[AssertionVerdict, ...]:
+        from flowpay.core.verify.errors import audit_response
+
+        audit = await audit_response(
+            self._chat,
+            text=request.text,
+            question=request.question,
+            passages=request.passages,
+            record_excerpts=request.records,
+            evidence_budget=self._budget,
+        )
+        return audit.verdicts
+
+
+def core_verifier() -> CoreVerifier:
+    """--verifier scripts.benchmark.assertion_audit:core_verifier 的注入入口。"""
+    return CoreVerifier()
 
 ROOT = Path(__file__).resolve().parents[2]
 # 同时支持 python scripts/benchmark/assertion_audit.py 与
