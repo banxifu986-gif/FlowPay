@@ -54,6 +54,15 @@
 - [ ] T023 交付报告 `specs/010-assertion-verification/delivery-report.md`：SC-1~SC-4 实测数据、SC-5/SC-6 状态（待批准/已出数）、费用记录（冒烟+回放+评测臂分开记账）、FR-4 越界定位门槛假设的实测观察（误伤样例是否支持该门槛）
 - [ ] T024 Code Review 等待与清偿：Ban 复核通过前不动 push/合并；复核意见清偿后更新 tasks 勾选与交付报告（009 Phase 8 先例）
 
+## Phase 8：审查清偿（2026-11-23 Code Review：NO-GO → 修后 GO；报告见 review-report.md）
+
+- [x] T025 [P1-1] 回放恢复层以臂结果题集为权威：`--all`=臂内全部题（修复题库 300 展开对 96 题臂逐题报缺的崩臂）；`--questions` 题单过滤下推恢复层、臂缺题显式报错；blueprints 只供 required/expected 查询；回归 4 例（臂权威/题单臂缺/题库缺/抽样臂缺）
+- [x] T026 [P1-2] 在线装配链接通（双树合并缝）：`ModelAuditor`（core/verify/online，主模型配置+每轮 tracer 下传构造 ChatClient，校验调用落当轮事件流）+ bootstrap `gate_from_settings` 装配 + router/MultiAgentWorkflow 透传至 synthesize_node；tracer 下传进 auditor 协议；装配级回归（tracer 路由/模型故障 fail-open/开关装配三例）+ StubAuditor 签名同步。**不清偿则 T022 开启态评测臂静默测空（开关读了没人装配）**
+- [x] T027 [P1-3] gate 单点移到编造核对 DISPUTE 收敛之后：重试作答同样过校验，堵重试路径零校验发布与首答判定事件/发布文本错位（回放草稿=DISPUTE 终态，同构口径恢复）；DISPUTE+gate 组合回归
+- [x] T028 [P2] P2-1 事件 text 以发布文本为准（候选句拼接≠发布，audit_payload 覆写入参）；P2-3 契约死字段删除（`breakpoint_hint`/`conflict_details`——conflict 随 verdicts 条目内联为唯一载荷出口，schema/data-model 同步）；P2-4 gate 删本地 apply_actions 统一 core 版（首处替换+列表前缀容忍，D5 口径归一）；P2-7 quickstart 冒烟改 `--questions` 12 题单（`--sample 12` 实为 72 题）
+- [x] T029 [P2-2/2-5/2-6] 记录为已知债，不在本轮清偿：句级切分双实现与五处词面复制（涉 009 既有 citation_check 代码，未经允许不动）→ 交付报告披露；多轮回放证据池=会话最终池≠在线当轮池（单轮无影响，全量回放定性后决定是否立项）
+- [ ] T030 T019 冒烟 12 题（清偿后 GO）：真校验器回放 + SC-4 报告（三类断点≥1例/类+矛盾档+通过题误伤样例）
+
 ## 依赖与并行
 
 ```text
