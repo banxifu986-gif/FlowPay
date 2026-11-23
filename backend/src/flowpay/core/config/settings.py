@@ -107,6 +107,15 @@ class Settings:
     knowledge_vector_limit: int = 20
     knowledge_rrf_k: int = 60
 
+    # 逐断言校验（specs/010 US3）：发布前对最终作答做证据支撑核查的在线开关。
+    # 默认关（旁路为主）：关闭时零新增调用零新增事件，行为与事件与 009 完全一致
+    # （SC-1）。不进环境覆盖通道——部署环境变量不得无意间开启在线校验改变回答路径。
+    assertion_audit_enabled: bool = False
+    # 校验证据集里全轮片段的字符封顶（绑定引用原文不受预算影响）。默认 8000 =
+    # PassageSet 上限 40000 的 20%（research D4，约 15-20 条片段，覆盖绑定引用与
+    # 高分反证，防校验 prompt 吃满稀释判定）；校准依据=冒烟实测，B3/T019 后回填。
+    assertion_audit_evidence_budget: int = 8000
+
     # 保留复现所需的运行设置；认证环境变量的值不属于快照内容。
     def snapshot(self) -> JsonObject:
         """返回可序列化的运行配置，供 run.started 固定本轮设置。
@@ -120,3 +129,8 @@ class Settings:
         value["sources_config"] = str(self.sources_config) if self.sources_config else None
         value["accounts_path"] = str(self.accounts_path) if self.accounts_path else None
         return value
+
+
+# 不进环境覆盖通道的密钥无关字段（specs/010 T013）：loader 按此名单跳过
+# FLOWPAY_<字段> 覆盖，开关与预算只随配置文件与运行快照走。
+ENV_EXEMPT_FIELDS = frozenset({"assertion_audit_enabled", "assertion_audit_evidence_budget"})

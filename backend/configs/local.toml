@@ -51,6 +51,15 @@ memory_recall_char_budget = 2000
 memory_semantic_limit = 2
 memory_max_notes = 200
 
+# 逐断言校验（specs/010 US3）：发布前校验器的在线开关，默认关（旁路为主）——
+# 关闭时零新增调用零新增事件，行为与事件与 009 完全一致（SC-1）。开启态评测臂
+# （T022）才置 true。不进环境覆盖通道（部署环境变量不得无意间开启在线校验）。
+assertion_audit_enabled = false
+# 校验证据集里全轮片段的字符封顶（绑定引用原文不受预算影响）。8000 = PassageSet
+# 上限 40000 的 20%（约 15-20 条片段，防校验 prompt 吃满稀释判定）；校准依据=
+# 冒烟实测，B3/T019 冒烟后回填。
+assertion_audit_evidence_budget = 8000
+
 # 聊天模型。任何 OpenAI 兼容服务都可以，地址、模型名和密钥都能在 .env 里覆盖：
 # FLOWPAY_MODEL_BASE_URL、FLOWPAY_MODEL_NAME、FLOWPAY_MODEL_API_KEY。
 [model]

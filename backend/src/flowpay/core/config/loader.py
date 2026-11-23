@@ -11,7 +11,7 @@ from pydantic import TypeAdapter
 from flowpay.core.json import JsonObject, parse_json, require_object, require_text
 from flowpay.core.llm.embedding import EmbeddingSettings
 
-from .settings import ModelSettings, Settings
+from .settings import ENV_EXEMPT_FIELDS, ModelSettings, Settings
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -40,7 +40,7 @@ def apply_environment_overrides(raw_config: JsonObject) -> JsonObject:
     if unknown := set(raw_config) - allowed:
         raise ValueError(f"Unknown configuration fields: {sorted(unknown)}")
     config = dict(raw_config)
-    for field in allowed - {"model", "embedding"}:
+    for field in allowed - {"model", "embedding"} - ENV_EXEMPT_FIELDS:
         override = env_override(f"FLOWPAY_{field.upper()}")
         if override is not None:
             config[field] = int(override) if field in {"port", "mock_delay_ms"} else override
