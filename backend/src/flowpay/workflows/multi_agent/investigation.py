@@ -54,6 +54,7 @@ from flowpay.workflows.manual_loop import (
     ToolAction,
 )
 
+from .assertion_gate import AssertionGate, gate_response
 from .citation_check import check_citations
 from .clarification import (
     CLARIFICATION_TOPICS,
@@ -1196,6 +1197,7 @@ def synthesize_node(
     shared: SharedTurn,
     case_note: str | None,
     context_policy: ContextPolicy | None = None,
+    gate: AssertionGate | None = None,
 ) -> Node:
     """汇总：由决策模型判定直接作答还是追问，并把模型决策落成事件与澄清状态。
 
@@ -1203,6 +1205,8 @@ def synthesize_node(
     "结论摘要 + 仍缺项 + 模型问题"，缺项经过滤，只含真正仍缺的部分（specs/007
     FR-4/FR-5/FR-12）。简报与每份调查报告是本请求的无界点：策略存在时简报按
     整体预算、每份报告按读取端上限裁剪；未配置时与原拼接逐字一致（specs/003）。
+    gate 是 010 断言校验门（specs/010 US3）：None（默认，开关关闭）时发布
+    路径零变化；开启时统一出口后、发布前单点校验并落 assertion.audit 事件。
     """
 
     async def node(state: GraphState) -> NodeOutput:
@@ -1286,6 +1290,20 @@ def synthesize_node(
                 )
 
         resolved = await decide()
+        # 010 断言校验单点接线（T015）：统一出口（编造核对 + 引用标记校验）之后、
+        # 发布之前。轮次预算耗尽时 gate 内部按 fail-open 口径跳过校验并记录事件；
+        # 校验调用不挤占 worker 工具预算（specs/009 FR-9 口径不变）。
+        gated_text = await gate_response(
+            resolved.text,
+            gate,
+            waiting=resolved.waiting,
+            question=question,
+            passages=shared.retrieved.all(),
+            tracer=runtime.tracer,
+            budget_exhausted=not shared.budget.may_think(),
+        )
+        if gated_text != resolved.text:
+            resolved = replace(resolved, text=gated_text)
         invented = sorted({name for name in record_ids(resolved.text) if name not in shared.seen})
         if invented:
             # 编造引用核对（SC-4）：shared.seen 收着用户给出与工具返回过的全部编号，
