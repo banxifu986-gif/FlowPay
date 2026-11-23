@@ -8,10 +8,12 @@
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 from flowpay.core.agent import Budget
 from flowpay.core.agent.trace import Tracer
 from flowpay.core.event_log import EventStore
+from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.event_log.types import Event
 from flowpay.core.execution.runtime import AgentRuntime
 from flowpay.core.json import JsonObject, require_list, require_object
@@ -33,6 +35,7 @@ from flowpay.workflows.multi_agent.assertion_gate import (
     gate_response,
     select_assertions,
 )
+from flowpay.workflows.multi_agent.graph import MultiAgentWorkflow
 from flowpay.workflows.multi_agent.investigation import synthesize_node
 from flowpay.workflows.multi_agent.state import GraphState, SharedTurn
 
@@ -68,13 +71,23 @@ class StubAuditor:
 
     result: AssertionAudit | Exception
     inputs: list[tuple[str, str, int]]
+    tracers: list[EventSink]
 
     def __init__(self, result: AssertionAudit | Exception) -> None:
         self.result = result
         self.inputs = []
+        self.tracers = []
 
-    async def audit(self, text: str, question: str, passages: Sequence[Passage]) -> AssertionAudit:
+    async def audit(
+        self,
+        text: str,
+        question: str,
+        passages: Sequence[Passage],
+        *,
+        tracer: EventSink,
+    ) -> AssertionAudit:
         self.inputs.append((text, question, len(passages)))
+        self.tracers.append(tracer)
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -300,3 +313,18 @@ async def test_gate_from_settings_defaults() -> None:
 def cast_auditor(auditor: StubAuditor) -> AssertionAuditor:
     """把受控校验器收口成调用面类型（Protocol 是结构化类型，直接传也兼容）。"""
     return auditor
+
+
+# ---- P1-2 清偿回归：装配链把 gate 透传到 workflow（bootstrap → router → run）----
+
+
+def test_gate_assembly_wiring_enabled_and_disabled() -> None:
+    """开启态 gate 带 auditor 透传到 workflow 属性；关闭态装配为 None。"""
+    on = SimpleNamespace(assertion_audit_enabled=True, assertion_audit_evidence_budget=8000)
+    gate = gate_from_settings(on, auditor=StubAuditor(fixture_audit()))
+    workflow = MultiAgentWorkflow(
+        Model(), lambda q: q, investigation_tool_budget=16, assertion_gate=gate
+    )
+    assert workflow.assertion_gate is gate
+    off = SimpleNamespace(assertion_audit_enabled=False, assertion_audit_evidence_budget=8000)
+    assert gate_from_settings(off, auditor=StubAuditor(fixture_audit())) is None

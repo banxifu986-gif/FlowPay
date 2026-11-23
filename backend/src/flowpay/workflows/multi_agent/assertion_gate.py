@@ -45,13 +45,19 @@ DEFAULT_EVIDENCE_BUDGET = 8000
 class AssertionAuditor(Protocol):
     """在线校验器的调用面：给定 gate 输入产出 AssertionAudit（specs/010 契约）。
 
-    树A 校验器（T018 合并后）由装配方按此签名接入；记录摘录（FR-1 的事件侧
-    数据源）属校验器装配层的职责——gate 只传已校验文本、本轮问题与证据池，
-    不扩调用面字段。
+    树A 校验器（T018 合并后）由装配方按此签名接入；tracer 是每轮事实
+    （manager 每轮新建），下传让校验器的模型调用落当轮事件流。记录摘录
+    （FR-1 的事件侧数据源）属校验器装配层的职责——gate 只传已校验文本、
+    本轮问题与证据池，不扩调用面字段。
     """
 
     async def audit(
-        self, text: str, question: str, passages: Sequence[Passage]
+        self,
+        text: str,
+        question: str,
+        passages: Sequence[Passage],
+        *,
+        tracer: EventSink,
     ) -> AssertionAudit: ...
 
 
@@ -222,7 +228,9 @@ async def gate_response(
         await tracer.emit(AUDIT_EVENT, audit_payload(AssertionAudit(text=text)))
         return text
     try:
-        audit = await gate.auditor.audit("\n".join(assertions), question, passages)
+        audit = await gate.auditor.audit(
+            "\n".join(assertions), question, passages, tracer=tracer
+        )
     except Exception:  # noqa: BLE001 - 校验器故障 fail-open，不上抛（FR-6）
         audit = AssertionAudit(text=text, fail_open=True)
     await tracer.emit(AUDIT_EVENT, audit_payload(audit))

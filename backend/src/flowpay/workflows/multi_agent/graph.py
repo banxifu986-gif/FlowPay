@@ -45,6 +45,7 @@ from flowpay.workflows.manual_loop import (
     restore_queried,
 )
 
+from .assertion_gate import AssertionGate
 from .clarification import ClarificationState, clarification_note
 from .intent import CLASSIFY_PROMPT, DEFAULT_INTENT, SET_INTENT, conditions_route, read_intent
 from .investigation import (
@@ -140,6 +141,7 @@ def build_graph(
     shared: SharedTurn,
     case_note: str | None,
     context_policy: ContextPolicy | None = None,
+    assertion_gate: AssertionGate | None = None,
 ):
     """组装轮内编排图：route → plan → Send 并行调查员 → synthesize。"""
 
@@ -173,7 +175,12 @@ def build_graph(
         "doc_worker",
         doc_worker_node(model, prepare_query, runtime, shared, case_note, context_policy),
     )
-    graph.add_node("synthesize", synthesize_node(model, runtime, shared, case_note, context_policy))
+    graph.add_node(
+        "synthesize",
+        synthesize_node(
+            model, runtime, shared, case_note, context_policy, gate=assertion_gate
+        ),
+    )
     graph.add_node("doc_qa", doc_qa_node(model, prepare_query, runtime, shared, context_policy))
     graph.add_node("chitchat", chitchat_node(model, runtime, shared))
     graph.add_edge(START, "route")
@@ -216,11 +223,13 @@ class MultiAgentWorkflow:
         memory_policy: MemoryPolicy | None = None,
         max_concurrency: int | None = None,
         investigation_tool_budget: int = 16,
+        assertion_gate: AssertionGate | None = None,
     ) -> None:
         """接收已装配的模型与查询格式函数；max_concurrency 仅测试用（串行化 Send）。
 
         investigation_tool_budget 是单任务工具调用上限（specs/009 FR-9，默认同
-        settings 默认值 16）；0 表示不启用单任务收束。
+        settings 默认值 16）；0 表示不启用单任务收束。assertion_gate 是 010
+        断言校验门（specs/010 审查 P1-2），None（默认关）时发布路径零变化。
         """
         self.model: ChatModel = model
         self.prepare_query: Callable[[str], str] = prepare_query
@@ -228,6 +237,7 @@ class MultiAgentWorkflow:
         self.memory_policy: MemoryPolicy | None = memory_policy
         self.max_concurrency: int | None = max_concurrency
         self.investigation_tool_budget: int = investigation_tool_budget
+        self.assertion_gate: AssertionGate | None = assertion_gate
 
     async def run(self, turn: TurnInput, runtime: AgentRuntime) -> TurnResult:
         """一轮 = 恢复跨轮状态 → 图状态进出 → 组装新检查点。"""
@@ -303,7 +313,13 @@ class MultiAgentWorkflow:
             {"max_concurrency": self.max_concurrency} if self.max_concurrency else None
         )
         graph = build_graph(
-            self.model, self.prepare_query, runtime, shared, note, self.context_policy
+            self.model,
+            self.prepare_query,
+            runtime,
+            shared,
+            note,
+            self.context_policy,
+            self.assertion_gate,
         )
         outcome = await graph.ainvoke(state, config)
         # 跨轮发现封顶：最旧条目合并为摘要条目，改口作废对合并条目仍命中（specs/003 FR-11）。

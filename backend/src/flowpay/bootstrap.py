@@ -11,7 +11,9 @@ from flowpay.core.llm.chat.openai_chat import OpenAiChatModel
 from flowpay.core.llm.chat.openai_responses import OpenAiResponsesModel
 from flowpay.core.llm.embedding.ollama import query_input_for
 from flowpay.core.memory.contracts import MemoryPolicy
+from flowpay.core.verify.online import ModelAuditor
 from flowpay.router import create_stage, resolve_stage
+from flowpay.workflows.multi_agent.assertion_gate import gate_from_settings
 
 
 def create_authenticator(settings: Settings) -> TokenAuthenticator:
@@ -76,6 +78,14 @@ def create_workflow(settings: Settings) -> Workflow:
         if settings.model.protocol == "responses"
         else OpenAiChatModel(settings.model)
     )
+    # 010 断言校验门（specs/010 审查 P1-2）：开关默认关零装配；开启时在线
+    # auditor 复用主模型配置（tracer 每轮由 audit 调用注入，见 core/verify/online），
+    # 证据预算取配置面。auditor 即使关闭态也构造（轻对象），装配缺口由
+    # gate_from_settings 的 None 判定挡住。
+    assertion_gate = gate_from_settings(
+        settings,
+        auditor=ModelAuditor(chat_model, settings.assertion_audit_evidence_budget),
+    )
     return create_stage(
         stage,
         chat_model,
@@ -83,4 +93,5 @@ def create_workflow(settings: Settings) -> Workflow:
         context_policy,
         memory_policy,
         investigation_tool_budget=settings.investigation_tool_budget,
+        assertion_gate=assertion_gate,
     )
