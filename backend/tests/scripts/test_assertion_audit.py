@@ -1,0 +1,432 @@
+"""assertion_audit：010 旁路回放驱动与断点归类的受控回归（specs/010 T009-T011）。
+
+只测外部可见行为：事件恢复（草稿/证据/摘录/已见编号）、校验链重放与在线
+citation_check 同构、fixture 桩判定、逐题 JSONL 形态。全部本地 fixture，零
+模型调用（SC-4 的机制预演）。
+"""
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+from flowpay.core.event_log.types import Event
+from flowpay.core.json import JsonObject, parse_json, require_object
+from flowpay.core.knowledge.contracts import Passage, PassageSource
+from flowpay.core.verify import Assertion, AssertionVerdict
+
+# scripts 不是 backend 安装包的一部分：宿主 pytest 单文件快跑需要仓库根在
+# sys.path（容器全量从仓库根跑时本就可 import，注入是幂等兜底）。
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.benchmark.assertion_audit import (  # noqa: E402
+    AuditInput,
+    FixtureVerifier,
+    ReplayCase,
+    audit_case,
+    draft_of,
+    load_fixture,
+    match_sessions,
+    record_excerpts_of,
+    replay_chain,
+    restore_case,
+    seen_ids,
+    verdict_payload,
+    write_verdicts,
+)
+from scripts.benchmark.attribution import Row  # noqa: E402
+
+
+# attribution.Row 的最小构造参数；逐题结果行的测试替身。
+def row(question_id: str, task_pass: bool = False) -> Row:
+    return Row(
+        question_id=question_id,
+        question_type="simple_retrieval",
+        multi_turn=False,
+        doc="0/1",
+        record="0/0",
+        assertion="0/1",
+        evidence_pass=False,
+        task_pass=task_pass,
+        signals=[],
+        deviations=[],
+    )
+
+
+def case(
+    question_id: str = "FP-BM-SR-0001", initial: str = "查一下 FP-4041 的含义。"
+) -> JsonObject:
+    """题库行替身：question_id + initial_user_message（会话锚点）。"""
+    return {
+        "question_id": question_id,
+        "question_type": "simple_retrieval",
+        "conversation": {"initial_user_message": initial},
+    }
+
+
+def event(kind: str, payload: JsonObject, seq: int = 0) -> Event:
+    """事件替身：补齐 Event 协议字段，回放只读 type/payload/seq。"""
+    return {
+        "schema_version": 1,
+        "event_id": f"evt_{seq}",
+        "session_id": "session_fixture",
+        "seq": seq,
+        "run_id": "run_fixture",
+        "call_id": None,
+        "parent_call_id": None,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "type": kind,
+        "payload": payload,
+    }
+
+
+def answer_call(mode: str = "answer", answer: str = "") -> Event:
+    """set_response 决策调用的 model.response 替身。"""
+    return event(
+        "model.response",
+        {
+            "completion": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "set_response",
+                                        "arguments": json.dumps(
+                                            {"mode": mode, "answer": answer}, ensure_ascii=False
+                                        ),
+                                    }
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        },
+    )
+
+
+def passage(
+    identifier: str = "doc:KB-TS-012#c001",
+    text: str = "FP-4041 表示 Customer 不存在或不可见。",
+) -> Passage:
+    """证据池片段替身；locator 的 heading 供对齐器使用。"""
+    return Passage(
+        id=identifier,
+        title="测试片段",
+        text=text,
+        score=0.5,
+        source=PassageSource(
+            collection_id="fixture",
+            doc_id="KB-TS-012",
+            chunk_no=1,
+            path="knowledge/KB-TS-012.md",
+            sha256="0" * 64,
+            locator={"heading": "FP-4041 语义"},
+            metadata={},
+        ),
+    )
+
+
+def passage_json(**overrides: object) -> JsonObject:
+    """片段的 JSON 形态（检查点 state.evidence 条目）：Passage 字段全展开。"""
+    item = passage()
+    payload: JsonObject = {
+        "id": item.id,
+        "title": item.title,
+        "text": item.text,
+        "score": item.score,
+        "source": {
+            "collection_id": item.source.collection_id,
+            "doc_id": item.source.doc_id,
+            "chunk_no": item.source.chunk_no,
+            "path": item.source.path,
+            "sha256": item.source.sha256,
+            "locator": dict(item.source.locator),
+            "metadata": dict(item.source.metadata),
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def build_arm(root: Path, session_id: str, events: list[Event]) -> Path:
+    """构造最小验收臂：multi-agent.jsonl + sessions.sqlite 的 events 表。"""
+    (root / "multi-agent").mkdir(parents=True)
+    result: JsonObject = {
+        "question_id": "FP-BM-SR-0001",
+        "question_type": "simple_retrieval",
+        "multi_turn": False,
+        "doc_hit": 1,
+        "doc_total": 1,
+        "record_hit": 0,
+        "record_total": 0,
+        "assertion_hit": 1,
+        "assertion_total": 1,
+        "negative_hit": 0,
+        "negative_total": 1,
+        "evidence_pass": True,
+        "task_pass": True,
+        "seconds": 1.0,
+        "deviations": [],
+        "signals": [],
+        "unverified": 0,
+    }
+    (root / "multi-agent.jsonl").write_text(
+        json.dumps(result, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    db = sqlite3.connect(root / "multi-agent" / "sessions.sqlite")
+    db.execute("CREATE TABLE events (session_id TEXT, seq INTEGER, type TEXT, data TEXT)")
+    for index, item in enumerate(events):
+        db.execute(
+            "INSERT INTO events VALUES (?, ?, ?, ?)",
+            (session_id, index, item["type"], json.dumps({"payload": item["payload"]})),
+        )
+    db.commit()
+    db.close()
+    return root
+
+
+def test_draft_recovery_and_replay_chain() -> None:
+    """synthesize 草稿恢复 + 校验链重放与在线 citation_check 同构。"""
+    answer = "FP-4041 的结果是 Customer 不可见。详见 [doc:KB-TS-012#c001]。\n\n该支付已成功。"
+    events = [answer_call("answer", answer)]
+    found = draft_of(events)
+    assert found is not None and found[0] == answer and found[1] == "synthesize_answer"
+    # 与在线 audited_response 相同的引用标记校验：标记不跨句，首句无标记被降级，
+    # 带标记句原样，空行结构保留——输出与 check_citations 逐字一致。
+    text = replay_chain(answer)
+    assert text == (
+        "未能核实：FP-4041 的结果是 Customer 不可见。"
+        "详见 [doc:KB-TS-012#c001]。\n\n"
+        "未能核实：该支付已成功。"
+    )
+
+
+def test_draft_recovery_branches() -> None:
+    """clarify 终态与轻分支不产出草稿；两者不进 deviations。"""
+    assert draft_of([answer_call("clarify")]) == (None, "clarify_terminal")
+    direct = event(
+        "model.response",
+        {"completion": {"choices": [{"message": {"role": "assistant", "content": "直答正文"}}]}},
+    )
+    assert draft_of([direct]) == (None, "light_branch")
+
+
+def test_match_sessions_by_initial_message(tmp_path: Path) -> None:
+    """首条用户消息按空白归一匹配 initial_user_message；不猜未匹配会话。"""
+    arm = build_arm(
+        tmp_path,
+        "session_a",
+        [
+            event("session.created", {}),
+            event("message.user", {"content": "查一下   FP-4041\n的含义。"}),
+            answer_call("answer", "正文"),
+        ],
+    )
+    from scripts.benchmark.assertion_audit import read_session_events
+
+    sessions = read_session_events(arm)
+    matched = match_sessions([case(initial="查一下 FP-4041 的含义。")], sessions)
+    assert matched == {"FP-BM-SR-0001": "session_a"}
+    unmatched = match_sessions([case(initial="另一个问题")], sessions)
+    assert unmatched == {}
+
+
+def test_record_excerpts_and_seen() -> None:
+    """记录摘录自 tool.result 恢复（文档工具除外）；已见编号含用户消息。"""
+    events = [
+        event("message.user", {"content": "支付 pay_x01 哪里失败了"}),
+        event(
+            "tool.result",
+            {
+                "name": "query_payments",
+                "result": {"rows": [{"payment_id": "pay_x01", "status": "failed"}]},
+            },
+        ),
+        event(
+            "tool.result",
+            {"name": "search_documents", "result": {"passages": [{"id": "doc:KB-1#c001"}]}},
+        ),
+    ]
+    excerpts = record_excerpts_of(events)
+    assert "pay_x01" in excerpts and "payment_id" in excerpts["pay_x01"]
+    assert seen_ids(events) == {"pay_x01"}
+
+
+def test_restore_case_fills_passages_and_deviations() -> None:
+    """restore_case：synthesize 题恢复草稿与证据；轻分支不记偏差；缺会话记偏差。"""
+    answer = "结论见 [doc:KB-TS-012#c001]。"
+    events = [
+        event("message.user", {"content": "查 FP-4041"}),
+        event(
+            "run.finished",
+            {"status": "completed", "state": {"evidence": [passage_json()]}},
+        ),
+        answer_call("answer", answer),
+    ]
+    restored = restore_case(row("FP-BM-SR-0001"), case(), "session_a", events)
+    assert restored.branch == "synthesize_answer" and restored.draft == answer
+    assert restored.text == replay_chain(answer)
+    assert restored.passages and restored.passages[0].id == "doc:KB-TS-012#c001"
+    assert restored.deviations == []
+    light = restore_case(row("FP-BM-SR-0001"), case(), "session_a", events[:2])
+    assert light.branch == "light_branch" and light.draft is None and light.deviations == []
+    missing = restore_case(row("FP-BM-SR-0001"), case(), None, None)
+    assert missing.branch == "session_missing" and "session_missing" in missing.deviations
+
+
+async def test_fixture_verifier_word_and_id_rules() -> None:
+    """fixture 桩的两级判定：词面支持（评测口径）与 ID 存在性（FR-3 口径）。"""
+    verifier = FixtureVerifier()
+    supported = await verifier.audit(
+        AuditInput(
+            text="FP-4041 的含义是 Customer 不存在或不可见，见 [doc:KB-TS-012#c001]。",
+            question="FP-4041 是什么？",
+            passages=(passage(),),
+            records={},
+        )
+    )
+    assert [v.verdict for v in supported] == ["supported"]
+    missing = await verifier.audit(
+        AuditInput(
+            text="FP-4041 的含义是错误码，见 [doc:KB-404#c009]。",
+            question="FP-4041 是什么？",
+            passages=(passage(),),
+            records={"pay_x01": "payment_id=pay_x01"},
+        )
+    )
+    assert [v.verdict for v in missing] == ["insufficient"]
+    assert missing[0].assertion.refs == ("doc:KB-404#c009",)
+
+
+async def test_fixture_verifier_record_missing_is_insufficient() -> None:
+    """断言引用的记录编号无摘录 → 证据不足（摘录缺失按证据缺失参与判定）。"""
+    verifier = FixtureVerifier()
+    verdicts = await verifier.audit(
+        AuditInput(
+            text="该笔支付的结果是退款完成，记录 pay_y01 可查。",
+            question="支付结果？",
+            passages=(passage(),),
+            records={},
+        )
+    )
+    assert [v.verdict for v in verdicts] == ["insufficient"]
+    assert verdicts[0].assertion.record_ids == ("pay_y01",)
+
+
+async def test_fixture_override_replaces_word_rule(tmp_path: Path) -> None:
+    """fixture 覆写优先于词面规则：partial + overreach + revision 原样生效。"""
+    fixture = load_fixture(
+        write_override(
+            tmp_path / "fixture.json",
+            {
+                "FP-BM-SR-0001": [
+                    {
+                        "match": "FP-4041 的含义是",
+                        "verdict": "partial",
+                        "overreach": {"dimension": "对象", "note": "原文只适用于生产环境"},
+                        "revision": "FP-4041 在生产环境表示",
+                    }
+                ]
+            },
+        )
+    )
+    verifier = FixtureVerifier(fixture)
+    verdicts = await verifier.audit(
+        AuditInput(
+            text="FP-4041 的含义是 Customer 不存在，见 [doc:KB-TS-012#c001]。",
+            question="FP-4041？",
+            passages=(passage(),),
+            records={},
+            question_id="FP-BM-SR-0001",
+        )
+    )
+    assert verdicts[0].verdict == "partial"
+    assert verdicts[0].overreach is not None and verdicts[0].overreach.dimension == "对象"
+    assert verdicts[0].revision == "FP-4041 在生产环境表示"
+    # 未命中的断言仍走词面规则。
+    other = await verifier.audit(
+        AuditInput(
+            text="FP-4041 的含义是 Customer 不存在，见 [doc:KB-TS-012#c001]。",
+            question="FP-4041？",
+            passages=(passage(),),
+            records={},
+            question_id="FP-BM-OTHER",
+        )
+    )
+    assert other[0].verdict == "supported"
+
+
+def write_override(path: Path, payload: JsonObject) -> Path:
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+async def test_audit_case_marks_invented_ids() -> None:
+    """终态草稿出现轮内未见编号 → deviation（编造核对重放校验）。"""
+    verifier = FixtureVerifier()
+    replay = ReplayCase(
+        question_id="FP-BM-SR-0001",
+        question_type="simple_retrieval",
+        multi_turn=False,
+        task_pass=True,
+        evidence_pass=True,
+        session_id="s1",
+        question="问题",
+        branch="synthesize_answer",
+        draft="结论是 pay_ghost_1 失败。",
+        text=replay_chain("结论是 pay_ghost_1 失败。"),
+        passages=(passage(),),
+        records={"pay_x01": "行"},
+        seen=frozenset({"pay_x01"}),
+    )
+    audit = await audit_case(replay, verifier)
+    assert audit.deviations == ("invented:pay_ghost_1",)
+
+
+def test_verdict_payload_matches_contract() -> None:
+    """判定条目 JSON 与 verdict-schema 的字段对齐：text/refs/record_ids/verdict。"""
+    payload = verdict_payload(
+        AssertionVerdict(
+            assertion=Assertion(text="句子", refs=("doc:KB-1#c001",), record_ids=("pay_1",)),
+            verdict="contradicted",
+        )
+    )
+    assert payload["verdict"] == "contradicted"
+    assert payload["refs"] == ["doc:KB-1#c001"]
+    assert "overreach" not in payload
+
+
+async def test_write_verdicts_jsonl(tmp_path: Path) -> None:
+    """JSONL 一行一题：branch/verdicts/deviations 全部落位。"""
+    rows = [
+        await audit_case(
+            ReplayCase(
+                question_id="FP-BM-SR-0001",
+                question_type="simple_retrieval",
+                multi_turn=False,
+                task_pass=True,
+                evidence_pass=True,
+                session_id="s1",
+                question="q",
+                branch="synthesize_answer",
+                draft="见 [doc:KB-TS-012#c001]。",
+                text=replay_chain("见 [doc:KB-TS-012#c001]。"),
+                passages=(passage(),),
+                records={},
+                seen=frozenset(),
+            ),
+            FixtureVerifier(),
+        )
+    ]
+    out = tmp_path / "verdicts.jsonl"
+    write_verdicts(out, rows)
+    line = require_object(parse_json(out.read_text(encoding="utf-8")))
+    assert line["question_id"] == "FP-BM-SR-0001" and line["branch"] == "synthesize_answer"
+    assert line["verdicts"] == []
