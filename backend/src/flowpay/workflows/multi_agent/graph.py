@@ -65,6 +65,7 @@ from .state import (
     SubtaskProgress,
     merge_old_findings,
     restore_findings,
+    restore_record_excerpts,
     task_key,
 )
 
@@ -181,8 +182,13 @@ def build_graph(
             model, runtime, shared, case_note, context_policy, gate=assertion_gate
         ),
     )
-    graph.add_node("doc_qa", doc_qa_node(model, prepare_query, runtime, shared, context_policy))
-    graph.add_node("chitchat", chitchat_node(model, runtime, shared))
+    # doc_qa/chitchat 与 synthesize 一样是作答类发布出口（specs/010 US1/FR-7）：
+    # gate 不传入会让 docs/闲聊轮零校验零事件（2026-11-23 e2e 实测清偿）。
+    graph.add_node(
+        "doc_qa",
+        doc_qa_node(model, prepare_query, runtime, shared, context_policy, gate=assertion_gate),
+    )
+    graph.add_node("chitchat", chitchat_node(model, runtime, shared, gate=assertion_gate))
     graph.add_edge(START, "route")
     graph.add_conditional_edges(
         "route", branch, {"troubleshoot": "plan", "docs": "doc_qa", "chitchat": "chitchat"}
@@ -251,6 +257,9 @@ class MultiAgentWorkflow:
             done=restore_queried(turn.saved_state.get("queried")),
             findings=restore_findings(turn.saved_state.get("findings")),
             retrieved=retrieved,
+            # 摘录池跨轮带回：恢复轮回答引用早前查过的记录，校验器照样有摘录
+            # 可查（specs/010 FR-1 在线口径；旧检查点无该键时从空开始）。
+            record_excerpts=restore_record_excerpts(turn.saved_state.get("record_excerpts")),
             clarification=ClarificationState.restore(turn.saved_state.get("clarification")),
             investigation_tool_budget=self.investigation_tool_budget,
         )
@@ -333,6 +342,7 @@ class MultiAgentWorkflow:
             "queried": sorted(shared.done),
             "findings": [to_json_object(finding) for finding in shared.findings],
             "evidence": [to_json_object(passage) for passage in shared.retrieved.all()],
+            "record_excerpts": dict(shared.record_excerpts),
             "stop_reason": "waiting_user" if outcome["waiting"] else "answered",
         }
         return TurnResult(

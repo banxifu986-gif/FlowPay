@@ -2,13 +2,15 @@
 
 gate 由 bootstrap 一次性装配（跨轮共享），tracer 是每轮事实（manager 每轮
 新建 Tracer）——audit 每次用当轮 tracer 构造 ChatClient（轻对象），校验器的
-model.request/response 照常落当轮事件流。记录摘录维度在线暂空（摘录源在
-shared 事件侧，协议不触；回放侧保持全口径），交付报告披露该已知局限。
+model.request/response 照常落当轮事件流。record_excerpts 是 worker 业务查询
+登记进共享摘录池的记录摘录（FR-1 的"断言中记录编号对应记录摘录"在线口径），
+由 gate 调用点从 shared 取出后传入，绑定记录编号的断言不再因摘录缺失必然降级
+（2026-11-23 e2e 实测清偿；回放侧保持全口径）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from flowpay.core.event_log.contracts import EventSink
 from flowpay.core.knowledge.contracts import Passage
@@ -32,6 +34,7 @@ class ModelAuditor:
         passages: Sequence[Passage],
         *,
         tracer: EventSink,
+        record_excerpts: Mapping[str, str],
     ) -> AssertionAudit:
         """一次完整校验；任一环节失败由 audit_response 内的 fail-open 兜底。"""
         chat = ChatClient(self._model, tracer)
@@ -40,6 +43,6 @@ class ModelAuditor:
             text=text,
             question=question,
             passages=passages,
-            record_excerpts={},
+            record_excerpts=record_excerpts,
             evidence_budget=self._budget,
         )

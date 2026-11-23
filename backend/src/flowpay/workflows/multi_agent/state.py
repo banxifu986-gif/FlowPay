@@ -121,6 +121,18 @@ def merge_old_findings(findings: list[Finding], cap: int) -> list[Finding]:
     return [merged, *findings[drop:]]
 
 
+def restore_record_excerpts(state: object) -> dict[str, str]:
+    """从检查点恢复摘录池；没有检查点时从空开始（旧会话/首轮无该键）。
+
+    登记与封顶在 core/verify/excerpts（摘录是校验证据装配的输入口径，workflows
+    不做 JSON 序列化）；本函数只负责检查点的取回形态。
+    """
+    if state is None:
+        return {}
+    record = require_object(state)
+    return {require_text(key): require_text(value) for key, value in record.items()}
+
+
 @dataclass
 class SharedTurn:
     """本轮共享资源。
@@ -138,6 +150,11 @@ class SharedTurn:
     # 汇总节点据此核对最终回答里的编号，堵住"报告转述时编造记录"的缺口（SC-4）。
     seen: set[str] = field(default_factory=set)
     retrieved: PassageSet = field(default_factory=PassageSet)
+    # FR-1 记录摘录池（specs/010）：sql worker 业务查询工具结果的记录行 JSON
+    # 原文，按记录编号索引；audit 证据装配的"断言中记录编号对应记录摘录"在线
+    # 口径从它取数，绑定记录编号的断言不再因摘录缺失必然降级。恢复轮从检查点
+    # 带回，跨轮回答引用早前查过的记录同样有摘录可查。
+    record_excerpts: dict[str, str] = field(default_factory=dict)
     budget: Budget = field(default_factory=lambda: Budget(16, 12))
     actions: list[ToolAction] = field(default_factory=list)
     pending: list[ClarificationRequest] = field(default_factory=list)

@@ -45,6 +45,7 @@ from flowpay.core.knowledge.tools import (
 from flowpay.core.llm.chat import ChatModel
 from flowpay.core.llm.chat.messages import ModelOutputError, answer_text
 from flowpay.core.tools import ToolInputError
+from flowpay.core.verify.excerpts import register_record_excerpts
 from flowpay.workflows.manual_loop import (
     CONDITION_FIELDS,
     LOG_TOOLS,
@@ -1048,6 +1049,9 @@ def sql_worker_node(
             rows = require_list(result["rows"])
             shared.actions.append(ToolAction(source, target, len(rows)))
             shared.findings.append(Finding(source, target, len(rows), row_digest(rows)))
+            # FR-1 在线口径：业务查询结果的记录行原文按编号登记进共享摘录池，
+            # 校验器的"断言中记录编号对应记录摘录"从它装配（specs/010）。
+            register_record_excerpts(shared.record_excerpts, rows)
             return result
 
         async def run_logs(
@@ -1072,6 +1076,8 @@ def sql_worker_node(
             rows = require_list(result["rows"])
             shared.actions.append(ToolAction(source, target, len(rows)))
             shared.findings.append(Finding(source, target, len(rows), row_digest(rows)))
+            # 日志查询同样是业务记录原文（get_api_request 等），与 SQL 查询同口径登记。
+            register_record_excerpts(shared.record_excerpts, rows)
             return result
 
         clarifier = Clarifier(
@@ -1301,8 +1307,9 @@ def synthesize_node(
         # 010 断言校验单点接线（T015；审查 P1-3 清偿）：移到编造核对的 DISPUTE
         # 收敛之后、发布之前——重试作答同样过 gate，避免重试路径零校验发布与
         # 首答判定事件/发布文本错位（回放侧草稿是 DISPUTE 终态，同构口径）。
-        # 轮次预算耗尽时 gate 内部按 fail-open 口径跳过校验并记录事件；校验
-        # 调用不挤占 worker 工具预算（specs/009 FR-9 口径不变）。
+        # 校验与轮次预算解耦：校验器调用走独立 ChatClient、不消耗轮次共享
+        # 预算，预算耗尽不跳过校验（否则完整排查轮在线上永不校验，2026-11-23
+        # e2e 实测结论）；校验调用不挤占 worker 工具预算（specs/009 FR-9）。
         gated_text = await gate_response(
             resolved.text,
             gate,
@@ -1310,7 +1317,7 @@ def synthesize_node(
             question=question,
             passages=shared.retrieved.all(),
             tracer=runtime.tracer,
-            budget_exhausted=not shared.budget.may_think(),
+            record_excerpts=shared.record_excerpts,
         )
         if gated_text != resolved.text:
             resolved = replace(resolved, text=gated_text)

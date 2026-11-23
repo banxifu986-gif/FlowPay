@@ -6,14 +6,17 @@ gate_response（T015，树B 唯一既有文件改动）。开关关闭（默认�
 处置结果按句锚点回填发布文本，判定/处置/fail-open 落 assertion.audit 事件
 （JSON 事件通道，前端与报表对未知事件不阻断）。
 
-校验器调用不计入 worker 工具预算（specs/009 FR-9 口径不变）；轮次预算耗尽
-跳过校验并发事件（等效 fail-open，specs/010 边界情况）。校验器任一环节故障
-fail-open 放行原文：不阻断回答、不产生 run.failed、不改变轮次终态（FR-6）。
+校验器调用不计入 worker 工具预算（specs/009 FR-9 口径不变），且与轮次预算
+解耦：校验器调用走独立 ChatClient、不消耗轮次共享预算，因此轮次预算耗尽不
+跳过校验——否则完整排查轮（预算先被 worker 调查耗尽）在线上永远走 fail-open、
+从不被真正校验（2026-11-23 e2e 实测结论，specs/010 边界情况改写口径）。
+校验器任一环节故障 fail-open 放行原文：不阻断回答、不产生 run.failed、不改变
+轮次终态（FR-6）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -41,9 +44,9 @@ class AssertionAuditor(Protocol):
     """在线校验器的调用面：给定 gate 输入产出 AssertionAudit（specs/010 契约）。
 
     树A 校验器（T018 合并后）由装配方按此签名接入；tracer 是每轮事实
-    （manager 每轮新建），下传让校验器的模型调用落当轮事件流。记录摘录
-    （FR-1 的事件侧数据源）属校验器装配层的职责——gate 只传已校验文本、
-    本轮问题与证据池，不扩调用面字段。
+    （manager 每轮新建），下传让校验器的模型调用落当轮事件流。record_excerpts
+    是 worker 业务查询登记进共享摘录池的记录摘录（FR-1 的"断言中记录编号对应
+    记录摘录"在线口径），由 gate 调用点从 shared 取出后一并传入。
     """
 
     async def audit(
@@ -53,6 +56,7 @@ class AssertionAuditor(Protocol):
         passages: Sequence[Passage],
         *,
         tracer: EventSink,
+        record_excerpts: Mapping[str, str],
     ) -> AssertionAudit: ...
 
 
@@ -162,17 +166,24 @@ async def gate_response(
     question: str,
     passages: Sequence[Passage],
     tracer: EventSink,
-    budget_exhausted: bool = False,
+    record_excerpts: Mapping[str, str] | None = None,
 ) -> str:
     """统一出口后的单点校验（T015 接线调用的入口）：发布文本的最终形态。
 
     waiting 轮（澄清追问正文是系统确定性拼接）与关闭态直接返回原文，零事件；
-    其余路径都发一次 assertion.audit（零断言、fail-open、预算耗尽、正常判定），
-    与 data-model 的"开关开启的每次最终作答校验后"一致。
+    其余路径都发一次 assertion.audit（零断言、fail-open、正常判定），与
+    data-model 的"开关开启的每次最终作答校验后"一致。record_excerpts 是
+    shared 的记录摘录池（None 视为空池），随断言一并送校验器——FR-1 的记录
+    摘录口径在线装配的入口。不看轮次预算：校验器调用走独立 ChatClient、
+    不消耗轮次共享预算，预算耗尽跳过会让完整排查轮（worker 调查先耗尽预算）
+    在线上永不校验——2026-11-23 e2e 实测结论。
     """
     if gate is None or not gate.enabled or waiting:
         return text
-    if budget_exhausted or gate.auditor is None:
+    excerpts: Mapping[str, str] = record_excerpts if record_excerpts is not None else {}
+    if gate.auditor is None:
+        # 装配缺口防线（enabled 而 auditor=None）：与预算无关，fail-open 记
+        # 事件放行原文，装配缺口不伪装成"关闭"（静默关闭会掩盖配置错误）。
         audit = AssertionAudit(text=text, fail_open=True)
         await tracer.emit(AUDIT_EVENT, audit_payload(audit))
         return text
@@ -184,7 +195,11 @@ async def gate_response(
         return text
     try:
         audit = await gate.auditor.audit(
-            "\n".join(assertions), question, passages, tracer=tracer
+            "\n".join(assertions),
+            question,
+            passages,
+            tracer=tracer,
+            record_excerpts=excerpts,
         )
     except Exception:  # noqa: BLE001 - 校验器故障 fail-open，不上抛（FR-6）
         audit = AssertionAudit(text=text, fail_open=True)

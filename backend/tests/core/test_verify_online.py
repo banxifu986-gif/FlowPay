@@ -69,7 +69,11 @@ async def test_model_auditor_routes_through_turn_tracer() -> None:
     auditor = ModelAuditor(model, evidence_budget=8000)
     tracer = TurnTracer()
     audit = await auditor.audit(
-        DRAFT, "企业版工单响应时长是多少？", cast("Sequence[Passage]", ROUNDS), tracer=tracer
+        DRAFT,
+        "企业版工单响应时长是多少？",
+        cast("Sequence[Passage]", ROUNDS),
+        tracer=tracer,
+        record_excerpts={},
     )
     assert audit.fail_open is False
     assert [action.action for action in audit.actions] == ["replace"]
@@ -82,8 +86,47 @@ async def test_model_auditor_fails_open_on_model_error() -> None:
     auditor = ModelAuditor(model, evidence_budget=8000)
     tracer = TurnTracer()
     audit = await auditor.audit(
-        DRAFT, "企业版工单响应时长是多少？", cast("Sequence[Passage]", ROUNDS), tracer=tracer
+        DRAFT,
+        "企业版工单响应时长是多少？",
+        cast("Sequence[Passage]", ROUNDS),
+        tracer=tracer,
+        record_excerpts={},
     )
     assert audit.fail_open is True
     assert audit.text == DRAFT
     assert audit.actions == ()
+
+
+async def test_model_auditor_forwards_record_excerpts() -> None:
+    """记录摘录透传校验链（FR-1 在线口径）：绑定编号的断言进语义校验而非强制降级。"""
+    sentence = "退款已提交 pay_bg_001_0003 [KB-BILL-003#c001]。"
+    model = ScriptedModel(
+        completion(
+            json_payload(
+                {
+                    "assertions": [
+                        {
+                            "text": sentence,
+                            "refs": ["KB-BILL-003#c001"],
+                            "record_ids": ["pay_bg_001_0003"],
+                        }
+                    ]
+                }
+            )
+        ),
+        completion(json_payload({"verdicts": [{"text": sentence, "verdict": "supported"}]})),
+    )
+    auditor = ModelAuditor(model, evidence_budget=8000)
+    tracer = TurnTracer()
+    audit = await auditor.audit(
+        sentence,
+        "这笔退款的状态是什么？",
+        cast("Sequence[Passage]", ROUNDS),
+        tracer=tracer,
+        record_excerpts={"pay_bg_001_0003": '{"payment_id": "pay_bg_001_0003"}'},
+    )
+    assert audit.fail_open is False
+    assert [verdict.verdict for verdict in audit.verdicts] == ["supported"]
+    assert len(model.requests) == 2  # 抽取 + 语义校验（摘录缺失时不会发生语义调用）
+    # 摘录确实进入校验请求正文（可证伪：硬编码空摘录时该块不会出现）。
+    assert '"payment_id"' in str(model.requests[-1]["messages"])
