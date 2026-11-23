@@ -8,7 +8,7 @@
 - `backend/src/flowpay/workflows/` — 阶段编排；每个阶段一个包/文件
 - `backend/src/flowpay/bootstrap.py` — 对象装配；`router.py` — 阶段注册与选择
 - `scripts/` — 发布文档导入、模拟服务、验收与基准
-- `specs/` — 特性需求沉淀（spec-kit）；当前特性见 `specs/001-langgraph-multi-agent/`
+- `specs/` — 特性需求沉淀（spec-kit）；当前特性目录见 `.specify/feature.json`，工件含 spec/plan/tasks/delivery-report
 
 ## 阶段命名
 
@@ -35,4 +35,11 @@ cd backend && uv run pytest        # 后端目录内直接跑测试
 - 通用能力及其实现放 core；发布文档导入、模拟服务与验收放 scripts；具体对象装配放 flowpay/bootstrap.py，阶段注册与选择放 flowpay/router.py。core 不依赖 workflows、router、bootstrap 或 scripts。
 - 公共方法声明清楚输入和返回类型，动作使用有意义的动词。已知结构不要退回 dict[str, Any]；供应商扩展和阶段状态可保留 JSON 边界。
 - __init__.py 仅作公共导出。先改善名称和结构，再写中文注释解释约束、原因、事务及取消行为；不以注释数量或短文件作为质量标准。
+- 对外契约保持兼容：新增信号走既有事件通道（JSON 事件），不改既有事件类型、检查点形状与用量统计口径；恢复/续跑语义变化不得改变轮级显式继续的对外行为。
+- 面向运营可调的参数进 Settings 与 local.toml（密钥只走环境变量，不进配置快照与日志）；单一实现内部使用的常量留在模块级，不进配置面。
 - 前端组件声明实际所需 props；事件解释集中在投影层，订阅、运行操作与本地草稿分别有明确所有者。
+
+## 测试约定
+
+- 测试断言外部可见行为（`status`、`messages`、事件序列等），不锁内部调用次数或私有结构；注入式回归用可证伪形态——断言新事件与新行为，防止走既有兜底路径空跑通过。
+- 失败基线必须为空，不滚动：任何失败都视为新债，当即处理，不以「与上次失败集合同」放行。
