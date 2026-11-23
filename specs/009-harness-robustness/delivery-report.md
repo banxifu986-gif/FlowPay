@@ -43,4 +43,4 @@
 - R96B2 臂：`var/benchmark/20261122-200707-6010b8/`（jsonl/report/事件库 570M，自命名卷 `flowpay_bench_a_out` 拷出）
 - 机制/归因报表：`var/benchmark/20261123-clarification-r96b2.md`、`var/benchmark/20261123-attribution-r96b2.md`
 - 冒烟臂：`20261122-190133-5eb32d`（run1，误伤样本）、`20261122-191957-2a8e69`（run2）；废弃试跑 `aborted-*` 两个目录留档
-- 遗留观察：①断言覆盖 -10 的取舍是否可接受由 R96B2 全量报表按题型复查（本轮未深入）；②us3 的越轨 stash（`feature/009-us3` worktree）随封存清理；③`008 quickstart` 文档的 env 写法待修正（T030）。
+- 遗留观察：①断言覆盖 -10 的取舍已按题型复查（2026-11-23）：**集中砸在 temporal_versioned（-4）与 tool_use_diagnostic（-4）**，其余四类 ±1 属噪声——这两类恰是"限定表述对精确断言匹配伤害最大"的多轮诊断题，与诚实作答口径的机制相关而非均匀退化；要挽回匹配率的杠杆在断言匹配口径（如未证实前缀不参与匹配），不在撤回诚实表述；②us3 的越轨 stash（`feature/009-us3` worktree）随封存清理；③`008 quickstart` 文档的 env 写法已修正（2026-11-23）。

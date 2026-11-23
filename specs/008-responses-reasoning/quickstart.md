@@ -26,7 +26,7 @@ protocol 分流、保留字校验、reasoning_effort 白名单。
 
 ```bash
 FLOWPAY_MODEL_PROTOCOL=responses \
-FLOWPAY_MODEL_REQUEST_OPTIONS='reasoning_effort = "medium"' \
+FLOWPAY_MODEL_REQUEST_OPTIONS='{"reasoning_effort": "medium"}' \
 docker compose run --rm --no-deps backend python scripts/benchmark/run.py \
   --stages multi-agent --per-type 1 \
   --governance --hybrid --config backend/configs/local.toml
@@ -35,11 +35,13 @@ docker compose run --rm --no-deps backend python scripts/benchmark/run.py \
 验收：run.failed=0；意图/拆解/澄清链路正常（事件抽查）；记录单题耗时与 token，
 外推 96 题总量并报告给 Ban。实际用量超外推 2 倍停手。
 
+> 勘误（2026-11-23）：`FLOWPAY_MODEL_REQUEST_OPTIONS` 走 JSON 解析（`loader.parse_json`），TOML 写法（`reasoning_effort = "medium"`）会直接 JSONDecodeError——本文件两处已改为 JSON 写法；同时环境变量需经 `docker compose run -e VAR` 显式透传进容器。
+
 ## B3 推理臂 96 题
 
 ```bash
 FLOWPAY_MODEL_PROTOCOL=responses \
-FLOWPAY_MODEL_REQUEST_OPTIONS='reasoning_effort = "medium"' \
+FLOWPAY_MODEL_REQUEST_OPTIONS='{"reasoning_effort": "medium"}' \
 docker compose run --rm --no-deps backend python scripts/benchmark/run.py \
   --stages multi-agent --per-type 16 \
   --governance --hybrid --config backend/configs/local.toml
