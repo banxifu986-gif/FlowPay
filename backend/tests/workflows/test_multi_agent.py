@@ -698,7 +698,11 @@ async def run_solo_troubleshoot(
 
 
 async def test_worker_failure_becomes_error_report(tmp_path: Path) -> None:
-    """调查者内部故障：产出含错误类型/信息/任务目标的错误报告，本轮照常作答（FR-10）。"""
+    """调查者内部故障：产出含任务目标与安全失败文案的错误报告，本轮照常作答（FR-10）。
+
+    提示词卫生（CLAUDE.md）：原始异常的类型与文本只进服务端日志，不进报告、
+    不进模型请求、不进用户可见正文——报告只携带安全失败文案（classify_failure）。
+    """
     model = Model()
     model.responses = [
         completion(calls=[intent_call("i1", "troubleshoot")], usage=USAGE),
@@ -713,10 +717,11 @@ async def test_worker_failure_becomes_error_report(tmp_path: Path) -> None:
     search.fail = True
     view = await run_solo_troubleshoot(tmp_path, model, search)
     assert require_text(view["status"]) == "completed"  # 故障不让整轮失败
-    # 错误报告进入 synthesize 请求：错误类型、信息与任务目标都在。
+    # 错误报告进入 synthesize 请求：任务目标与安全失败文案在，原始异常不在。
     content = json.dumps(model.requests[-1]["messages"], ensure_ascii=False)
-    assert "RuntimeError" in content and "search offline" in content
+    assert "RuntimeError" not in content and "search offline" not in content
     assert "查明重试策略" in content
+    assert "未能完成" in content and "记录已保留" in content
 
 
 async def test_worker_report_clipped_to_policy_budget(tmp_path: Path) -> None:

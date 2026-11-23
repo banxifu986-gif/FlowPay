@@ -395,11 +395,14 @@ async def test_deterministic_outage_disables_chain_for_rest_of_turn(tmp_path: Pa
         assert len([e for e in events if e["type"] == "knowledge.request"]) == 1
         # ③ 无 run.retry：确定性失败不烧重试预算。
         assert not [e for e in events if e["type"] == "run.retry"]
-        # ④ 两个任务都按 error_report 收束（目标与失败说明进入汇总请求）。
+        # ④ 两个任务都按 error_report 收束（目标与安全失败文案进入汇总请求；
+        # 提示词卫生：原始异常类型与文本不进模型请求，链路禁用事实由 tool.outage
+        # 事件承载，报告只带 classify_failure 的安全文案）。
         assert require_text(view["status"]) == "completed"
         content = json.dumps(model.requests[-1]["messages"], ensure_ascii=False)
         assert "查明重试策略" in content and "查明退避规则" in content
-        assert "RuntimeError" in content  # 第二个任务的禁用即收束说明
+        assert "RuntimeError" not in content
+        assert "记录已保留" in content
     finally:
         await manager.shutdown()
         resources.close()

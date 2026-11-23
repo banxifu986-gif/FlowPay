@@ -1,10 +1,11 @@
 """统一作答出口后的逐断言校验门（specs/010 US3/T014）。
 
-接线点唯一：synthesize_node 在 audited_response 产物发布前单点调用
-gate_response（T015，树B 唯一既有文件改动）。开关关闭（默认）时零模型调用、
-零事件，行为与 009 一致（SC-1）；开启时筛选带引用标记的断言句送 core 校验器，
-处置结果按句锚点回填发布文本，判定/处置/fail-open 落 assertion.audit 事件
-（JSON 事件通道，前端与报表对未知事件不阻断）。
+作答类发布出口统一过门：synthesize 在 audited_response 产物发布前、doc_qa 与
+chitchat（含零命中直答）在各自发布前调用 gate_response——最初只接 synthesize
+（T015），2026-11-23 e2e 实测发现 docs/闲聊直答绕过校验门后统一（审查清偿）。
+开关关闭（默认）时零模型调用、零事件，行为与 009 一致（SC-1）；开启时筛选带
+引用标记的断言句送 core 校验器，处置结果按句锚点回填发布文本，判定/处置/
+fail-open 落 assertion.audit 事件（JSON 事件通道，前端与报表对未知事件不阻断）。
 
 校验器调用不计入 worker 工具预算（specs/009 FR-9 口径不变），且与轮次预算
 解耦：校验器调用走独立 ChatClient、不消耗轮次共享预算，因此轮次预算耗尽不
