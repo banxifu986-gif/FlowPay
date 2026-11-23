@@ -4,7 +4,7 @@
 
 ## Phase 1：Setup
 
-- [ ] T000 [P] 提交门：将 `specs/009-harness-robustness/`、`.gitignore`（/docs/wiki/ 行）、`.specify/feature.json` 提交入库——并行 worktree 建立的前置门（worktree 不共享未跟踪文件；需 Ban 批准 commit）
+- [x] T000 [P] 提交门：将 `specs/009-harness-robustness/`、`.gitignore`（/docs/wiki/ 行）、`.specify/feature.json` 提交入库——并行 worktree 建立的前置门（worktree 不共享未跟踪文件；需 Ban 批准 commit）
 - [x] T001 基线快照：从 `var/benchmark/20261122-101317-2ca71c/multi-agent.jsonl` 固化 R96B 逐题对照清单（逐题 pass/evidence/断言命中），存 `specs/009-harness-robustness/baseline-r96b.jsonl`；记录总 20/96、单轮 16/32、多轮 4/64、证据 54/96、multi_hop 证据 11/16、多轮证据未中 27、run.failed=1 的归因（**synthesize 空输出**——无决策+空正文→ModelOutputError→other 档直接终态；嵌入 400 那轮经 error_report 降级正常完成，2026-11-23 审查核实）
 - [x] T002 [P] 核对环境：`.env` 密钥与 bge-m3 集合就绪；确认 `resume_run`/`_submit_run(*, resume)` 现签名（manager.py:167-173）、`TurnInput.resumed` 字段（manager.py:344）与 `_persist_run` 的 run.started 载荷 resumed 标记（resumed 轮不写 message.user 但写 run.started）；确认新配置项 `investigation_tool_budget` 无需环境覆盖通道
 
@@ -53,6 +53,19 @@
 - [x] T028 报表核对：SC-4 零重查事件证据（如有恢复场景）+ SC-7 第二跳机制抽查（retrieval.py 离线诊断）
 - [x] T029 质量门禁：`make quality` 全绿；失败基线为空（不滚动）
 - [x] T030 交付报告：`delivery-report.md` 落盘（SC-1~SC-8 逐项给证据、遗留观察）
+
+## Phase 8：交付后审查修复（2026-11-23 code review，push 前清偿）
+
+> 流程教训：T020 任务文本相对 plan 批次 B4 静默收窄，FR-9 从缝里漏掉——后续 `speckit-tasks` 产出后应做一次 FR ↔ 任务双向覆盖核对。
+
+- [x] T031 [US4/FR-9] 单任务预算收束落地（审查 C1）：`claim` 双记账（task_key 非空即递增 `task_tool_calls`）+ `investigate` 循环达限收束（`task.budget_exhausted` 事件 + 断点落盘 + 基线切片报告）；配置接线 bootstrap→create_stage→MultiAgentWorkflow→SharedTurn（0=不启用）；集成测试两任务各自达限、全局预算余量不受影响
+- [x] T032 [US3/FR-6] 诚实占位完成接入引用校验（审查 I1）：`audited_response` 收敛为模型作答与 FR-12 占位的单一出口，SC-5 覆盖率无豁口；占位嵌报告断言句降级用例
+- [x] T033 断点合并双实现收敛（审查 I2）：删除 `state.merge_task_progress` 死代码，双向合并用例迁到 `manager.merge_progress_payloads`（生产实现）
+- [x] T034 [US4] `expected_kind` 记录词形收窄（审查 M3）：`BUSINESS_RECORD_ID` 要求纯数字段，api_v2 类形态不强判 sql
+- [x] T035 `second_hop_audit` 只审计第一跳之后的检索查询（审查 M1）+ `--second-hop-audit` CLI 接入
+- [x] T036 恢复注入的 `task_progress` 容器损坏按空处理（审查 M5）：`injected_progress` 与 `SubtaskProgress.restore` 同容忍口径
+- [x] T037 spec/文档回写（审查 M2/M6/M7）：跨轮去重键随 findings 变化备注、收束即断点口径、T000 勾选；交付报告补审查修复附录
+- [x] T038 质量门禁复跑：basedpyright 0/0、ruff 全绿、容器全量 pytest 617 passed / 5 skipped（审查 M4 复核为误判：空 answer 已被 007 `require_body_for_mode` 拒绝并走 FR-12 重试，无需修）
 
 ## 依赖与并行
 

@@ -44,3 +44,12 @@
 - 机制/归因报表：`var/benchmark/20261123-clarification-r96b2.md`、`var/benchmark/20261123-attribution-r96b2.md`
 - 冒烟臂：`20261122-190133-5eb32d`（run1，误伤样本）、`20261122-191957-2a8e69`（run2）；废弃试跑 `aborted-*` 两个目录留档
 - 遗留观察：①断言覆盖 -10 的取舍已按题型复查（2026-11-23）：**集中砸在 temporal_versioned（-4）与 tool_use_diagnostic（-4）**，其余四类 ±1 属噪声——这两类恰是"限定表述对精确断言匹配伤害最大"的多轮诊断题，与诚实作答口径的机制相关而非均匀退化；要挽回匹配率的杠杆在断言匹配口径（如未证实前缀不参与匹配），不在撤回诚实表述；②us3 的越轨 stash（`feature/009-us3` worktree）随封存清理；③`008 quickstart` 文档的 env 写法已修正（2026-11-23）。
+
+## 6. 交付后审查修复（2026-11-23 code review，push 前清偿，tasks.md Phase 8）
+
+- **C1（Critical，FR-9 未实现）**：配置项、`task_tool_calls` 字段与 `task.budget_exhausted` 事件三件套均无读写点，quickstart 承诺的"达上限即收束"不可执行。已补实现：`claim` 双记账、`investigate` 循环达限收束（事件 + 断点落盘 + 基线切片报告，全局预算余量不受影响）、bootstrap→create_stage→MultiAgentWorkflow→SharedTurn 配置接线（0=不启用）；集成测试两任务各自达限。根因是 tasks.md 任务文本相对 plan 批次 B4 静默收窄——后续 spec 流程在 `speckit-tasks` 产出后需做 FR↔任务双向覆盖核对。
+- **I1（Important，FR-12 占位绕过引用校验）**：占位正文原样嵌入 worker 报告，报告里的无引用断言句会裸奔输出。已修：`audited_response` 收敛为模型作答与占位的单一出口，SC-5 覆盖率无豁口。R96B2 臂未触发该路径，臂内数据不受影响。
+- **I2（Important，断点合并双实现）**：生产走 `manager.merge_progress_payloads`，`state.merge_task_progress` 仅测试引用。已删死代码，双向合并用例迁到 manager 版。
+- **M1–M7（Minor）**：M1 `second_hop_audit` 只审计第一跳之后的检索查询（Send 并行不制造假 miss）+ `--second-hop-audit` CLI 接入；M2 跨轮去重键随 findings 变化的语义备注回写 spec；M3 `expected_kind` 记录词形收窄（纯数字段才算业务记录，api_v2 不误改派）；M4 复核为误判（空 answer 已被 007 `require_body_for_mode` 拒绝并走 FR-12 重试，无需修）；M5 恢复注入容器损坏按空处理（不阻断续跑）；M6 tasks T000 勾选；M7 收束即断点口径回写 spec。
+- **门禁复跑**：basedpyright 0/0、ruff 全绿；容器全量 pytest 617 passed / 5 skipped（含审查修复新增 8 个用例）。
+- **数据口径说明**：本节修复发生在 R96B2 臂出数之后，臂内数据未重跑；除 I1（臂内未触发）外，均为不改变臂内行为口径的代码与文档清偿。
