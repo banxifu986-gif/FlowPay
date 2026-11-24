@@ -34,6 +34,9 @@ var/
 # FlowPay 数据包：按 README 不随仓库分发
 /flowpay-dataset/
 
+# FlowPay FAQ 数据包（specs/011）：与主数据集同规则，不随仓库分发
+/flowpay-faq-dataset/
+
 # 黑马点评模拟数据的生成物；生成器代码、知识文档和 Benchmark 可保留
 /hmdp-dataset/data/generated/
 
