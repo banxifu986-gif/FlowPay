@@ -10,6 +10,48 @@
 
 代码结构刻意分层：`backend/src/flowpay/core` 是通用能力层（Agent、LLM、知识检索、业务工具、HTTP、事件日志），`backend/src/flowpay/workflows/` 每个阶段一个文件/包，只写编排、提示词和业务决策，不碰底层实现。前端是一个 React 聊天界面，能看到每轮的工具调用、事件流和用量。
 
+## 项目架构
+
+```mermaid
+flowchart TB
+    web["React 聊天界面"]
+
+    subgraph backend["FlowPay 后端"]
+        api["FastAPI"]
+        runner["会话与轮次执行"]
+        api --> runner
+
+        subgraph workflow["LangGraph · 默认 multi-agent 排查"]
+            route["意图路由与任务拆解"]
+            sql["业务数据调查员"]
+            docs["知识文档调查员"]
+            reply["证据汇总与引用检查"]
+            route --> sql
+            route --> docs
+            sql --> reply
+            docs --> reply
+        end
+
+        runner --> route
+    end
+
+    web <-->|HTTP 请求 / SSE 事件| api
+    runner <--> sessions[("会话与事件 · SQLite")]
+    sql -->|只读查询| records[("业务记录 · SQLite / JSONL")]
+    docs -->|检索文档| knowledge[("知识库 · PostgreSQL + pgvector")]
+    docs -.->|查询向量化| embeddings["OpenAI 兼容嵌入模型"]
+    workflow -.-> chat["OpenAI 兼容聊天模型"]
+
+    classDef entry fill:#e7f5ff,stroke:#1971c2,color:#183153
+    classDef agent fill:#f3edff,stroke:#6741d9,color:#2f2150
+    classDef store fill:#e6fcf5,stroke:#087f5b,color:#163c33
+    class web,api,runner entry
+    class route,sql,docs,reply agent
+    class sessions,records,knowledge store
+```
+
+图中是默认的排查主链：按需并行取证，汇总后作答。文档直答和闲聊不走完整排查链路；运行事件持久化后通过 SSE 送回前端，刷新后也可回放。
+
 ## 前置条件
 
 | 需要什么 | 说明 |
