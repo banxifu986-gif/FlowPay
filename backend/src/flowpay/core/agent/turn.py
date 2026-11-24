@@ -393,10 +393,6 @@ class AgentTurn:
             usage=sum_entries(self.usage_entries),
         )
 
-    def give_up(self, text: str) -> TurnResult:
-        """没有资料可用时直接结束本轮，不调用模型，也不推进检查点。"""
-        return TurnResult(text, {})
-
     def checkpoint(self, **state: object) -> JsonObject:
         """本轮可提交的状态：原生消息、累计片段、预算花销与阶段自有字段。
 

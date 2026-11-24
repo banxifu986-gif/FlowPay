@@ -75,14 +75,6 @@ class AssertionGate:
     auditor: AssertionAuditor | None = None
 
 
-@dataclass(frozen=True)
-class GateOutcome:
-    """一次门控的产物：发布文本与事件载荷（payload=None 表示不发事件）。"""
-
-    text: str
-    payload: JsonObject | None = None
-
-
 def gate_from_settings(
     settings: object, auditor: AssertionAuditor | None = None
 ) -> AssertionGate | None:

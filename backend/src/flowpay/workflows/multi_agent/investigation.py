@@ -176,13 +176,6 @@ MAX_TASKS = 4
 MAX_TOPIC_ANSWERS = len(CLARIFICATION_TOPICS)
 
 
-class SupervisorPlan(BaseModel):
-    """set_tasks 的任务部分；tasks 为空表示不需要新调查，至多 MAX_TASKS 个子任务。"""
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-    tasks: list[SupervisorTask] = Field(max_length=MAX_TASKS)
-
-
 class TopicAnswer(BaseModel):
     """用户对某个背景主题的回答：主题枚举 + 单条值。"""
 
@@ -680,20 +673,6 @@ def turn_briefing(shared: SharedTurn, case_note: str | None) -> str | None:
             f"- {finding.tool} {finding.target}：{finding.digest}" for finding in shared.findings
         ]
     return "\n".join(lines) if lines else None
-
-
-def task_messages(
-    system: str, question: str, briefing: str | None, objective: str
-) -> list[ChatCompletionMessageParam]:
-    """调查员的首轮消息：系统提示词、用户问题、简报与任务目标。"""
-    messages: list[ChatCompletionMessageParam] = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": question},
-    ]
-    if briefing:
-        messages.append({"role": "system", "content": briefing})
-    messages.append({"role": "user", "content": f"调查任务：{objective}"})
-    return messages
 
 
 def error_report(

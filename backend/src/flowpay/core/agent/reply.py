@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from openai.types.chat import (
     ChatCompletion,
@@ -39,10 +39,6 @@ class Observation:
     action: Action
     payload: JsonObject
     note: str | None = None
-
-    def annotate(self, note: str) -> Observation:
-        """附加一段说明并返回新的观察；原观察不可变，便于对照原始工具结果。"""
-        return replace(self, note=note)
 
     def content(self) -> JsonObject:
         """组合成回填给模型的工具结果正文。"""
