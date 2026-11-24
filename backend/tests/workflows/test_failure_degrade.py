@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import cast, override
 
+import httpx
 import pytest
 
 from flowpay.core.event_log.types import Event
@@ -25,6 +26,8 @@ from flowpay.core.json import (
 from flowpay.core.knowledge.contracts import Passage
 from flowpay.core.llm.chat.http_error import ModelHTTPError
 from flowpay.core.llm.chat.messages import ModelOutputError
+from flowpay.core.llm.embedding import EmbeddingClient, EmbeddingSettings
+from flowpay.core.llm.embedding.openai_embedding import OpenAiEmbeddingModel
 from flowpay.workflows.multi_agent.clarification import ClarificationRequest
 from flowpay.workflows.multi_agent.investigation import (
     check_chain,
@@ -352,6 +355,83 @@ class FirstQueryOkSearch(DeterministicSearch):
         return [hit()]
 
 
+def embedding_settings() -> EmbeddingSettings:
+    """真实适配器连接设置：指向测试域名的 /embeddings，错误经 MockTransport 注入。"""
+    return EmbeddingSettings(
+        name="fixture",
+        base_url="https://embedding.test/v1",
+        dimensions=3,
+        api_key_env="TEST_EMBEDDING_KEY",
+    )
+
+
+class FirstQueryOkRealEmbeddingSearch(Search):
+    """生产链路回归替身：首查正常，后续查询交给真实嵌入适配器（MockTransport）。
+
+    与 FirstQueryOkSearch 的差别在错误来源：不再手工构造 ModelHTTPError，
+    而是让 SDK → OpenAiEmbeddingModel → EmbeddingClient 这段真实链路在
+    MockTransport 返回确定性 400，验证 worker 守卫收到的是修复后的类型化错误。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.http_requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        """确定性 400（R96B FP-BM-TV-0116 形态）；记录每次真实 HTTP 请求。"""
+        self.http_requests.append(request)
+        return httpx.Response(
+            400,
+            json={"code": 20015, "message": "The parameter is invalid. Please check again."},
+        )
+
+    @override
+    async def search(
+        self,
+        collection_id: str,
+        text: str,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+    ) -> list[Passage]:
+        assert collection_id == "fixture" and self.tracer is not None
+        await self.tracer.emit("knowledge.request", {"query": text, "limit": limit})
+        self.queries.append((text, limit))
+        if len(self.queries) == 1:
+            await self.tracer.emit("knowledge.response", {"results": [to_json_object(hit())]})
+            return [hit()]
+        adapter = OpenAiEmbeddingModel(embedding_settings(), httpx.MockTransport(self.handler))
+        await EmbeddingClient(adapter, self.tracer).embed([text])
+        raise AssertionError("MockTransport 400 下嵌入必须失败，不得静默通过")
+
+
+class ContextLimitRealEmbeddingSearch(Search):
+    """所有查询都经真实适配器收到超限形态 400；计数底层 HTTP 请求验证不熔断。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.http_requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        """超限与输入拒绝关键词同现的 400（审查 P2-1 复现形态）。"""
+        self.http_requests.append(request)
+        return httpx.Response(400, text="Invalid input: maximum context length is 512 tokens")
+
+    @override
+    async def search(
+        self,
+        collection_id: str,
+        text: str,
+        limit: int = 5,
+        filters: JsonObject | None = None,
+    ) -> list[Passage]:
+        assert collection_id == "fixture" and self.tracer is not None
+        await self.tracer.emit("knowledge.request", {"query": text, "limit": limit})
+        self.queries.append((text, limit))
+        adapter = OpenAiEmbeddingModel(embedding_settings(), httpx.MockTransport(self.handler))
+        await EmbeddingClient(adapter, self.tracer).embed([text])
+        raise AssertionError("MockTransport 400 下嵌入必须失败，不得静默通过")
+
+
 async def test_deterministic_outage_disables_chain_for_rest_of_turn(tmp_path: Path) -> None:
     """集成可证伪形态（SC-2）：注入嵌入 400 → tool.outage 登记 → 后续调用不再发起请求。
 
@@ -637,6 +717,126 @@ async def test_partial_evidence_answers_with_unverified_mark(tmp_path: Path) -> 
         assert require_list(answer.get("evidence") or [])  # 已查证据仍可展开
         assert len([e for e in events if e["type"] == "tool.outage"]) == 1
         assert not [e for e in events if e["type"] == "run.retry"]
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_real_embedding_sdk_error_outages_chain_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """生产链路回归：真实 SDK 适配器的确定性 400 也走同一套 worker 守卫（R96B 断链回归）。
+
+    首查拿到证据，第二个任务经真实 OpenAiEmbeddingModel 收到 MockTransport 的
+    结构性 400——修复前该错误被折叠成普通 RuntimeError，守卫不登记、不发
+    tool.outage，第二个任务的查询会再次打到供应商。修复后断言：
+    tool.outage 恰一次、不同参数的后续查询零底层 HTTP 请求（禁用拦截发生在
+    claim 之前，与普通查询去重无关）、已有证据仍进汇总作答；第三个任务的
+    查询被禁用登记拦在 HTTP 之前（审查 P2-2：登记≠拦截，第三查询证明拦截）。
+    """
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "secret")
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(
+            calls=[
+                tasks_call(
+                    "t1",
+                    [
+                        {"kind": "docs", "objective": "查明重试策略"},
+                        {"kind": "docs", "objective": "查明退避规则"},
+                        {"kind": "docs", "objective": "查明赔付时效"},
+                    ],
+                )
+            ]
+        ),
+        completion(calls=[search_call("s1", "重试策略")]),
+        completion("重试策略：HTTP 410 后禁用端点 [doc:RULE-1#c001]。"),
+        completion(calls=[search_call("s2", "退避规则")]),  # 第二个任务：真实嵌入 400
+        completion(calls=[search_call("s3", "赔付时效")]),  # 第三个任务：必须被拦截
+        completion(f"{FOUND_PART}；{MISSING_PART}。"),
+    ]
+    search = FirstQueryOkRealEmbeddingSearch()
+    manager, resources = make_manager(tmp_path, model, search, max_concurrency=1)
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        events = manager.store.read(sid)
+        assert require_text(view["status"]) == "completed"
+        answer = require_object(view["messages"][-1])
+        # 已有证据仍能用于汇总：首查片段照常作答并可展开，失败子项统一口径。
+        assert "HTTP 410" in require_text(answer["content"])
+        assert "未能核实" in require_text(answer["content"])
+        assert require_list(answer.get("evidence") or [])
+        # tool.outage 恰一次：真实 SDK 错误被识别为确定性档位。
+        outages = [e for e in events if e["type"] == "tool.outage"]
+        assert len(outages) == 1
+        payload = require_object(outages[0]["payload"])
+        assert require_text(payload["chain"]) == "embedding"
+        assert require_text(payload["failure_class"]) == "deterministic"
+        # 不同参数的后续查询不再发起任何底层 HTTP 请求（链路禁用先于 claim 与查询）。
+        assert len(search.http_requests) == 1
+        assert len([e for e in events if e["type"] == "knowledge.request"]) == 2
+        assert not [e for e in events if e["type"] == "run.retry"]
+        # 拦截有据可查：第三个任务按收束进汇总请求，而非静默跳过（其零请求由
+        # 上方 knowledge.request==2 与 http_requests==1 共同证明）。
+        sent = json.dumps(model.requests, ensure_ascii=False)
+        assert "查明赔付时效" in sent
+        # 提示词卫生：供应商错误正文与原始异常类型不进模型请求。
+        assert "parameter is invalid" not in sent
+        assert "ModelHTTPError" not in sent
+    finally:
+        await manager.shutdown()
+        resources.close()
+
+
+async def test_embedding_context_limit_form_does_not_outage_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超限与输入拒绝关键词同现的 400 不熔断：后续更短查询仍发得出（审查 P2-1）。
+
+    超限是单请求条件，不是链路失效：修复前该形态被判 deterministic →
+    tool.outage 登记后，第二条更短的查询连 HTTP 都发不出（http_requests==1）。
+    修复后按硬失败收束单任务、不登记禁用。同时锁文案（审查 P3）：超限失败
+    文案不得声称执行过压缩——嵌入链路直连检索，从无压缩步骤。
+    """
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "secret")
+    model = Model()
+    model.responses = [
+        completion(calls=[intent_call("i1", "troubleshoot")]),
+        completion(
+            calls=[
+                tasks_call(
+                    "t1",
+                    [
+                        {"kind": "docs", "objective": "查明重试策略"},
+                        {"kind": "docs", "objective": "查明退避规则"},
+                    ],
+                )
+            ]
+        ),
+        completion(calls=[search_call("s1", "重试策略" * 40)]),  # 超长查询触发超限形态
+        completion(calls=[search_call("s2", "退避规则")]),  # 更短的后续查询
+        completion("已根据调查报告说明限制。"),
+    ]
+    search = ContextLimitRealEmbeddingSearch()
+    manager, resources = make_manager(tmp_path, model, search, max_concurrency=1)
+    try:
+        sid = require_text((await manager.create_session(INTERNAL))["id"])
+        await manager.submit_message(sid, "first", "帮我看看这笔支付为什么没收到通知", INTERNAL)
+        await manager.tasks[sid]
+        view = await manager.get_session(sid, INTERNAL)
+        events = manager.store.read(sid)
+        # 超限形态不熔断：无 tool.outage，第二条查询确实打到了供应商。
+        assert not [e for e in events if e["type"] == "tool.outage"]
+        assert len(search.http_requests) == 2
+        assert len([e for e in events if e["type"] == "knowledge.request"]) == 2
+        assert require_text(view["status"]) == "completed"
+        assert not [e for e in events if e["type"] == "run.retry"]  # 硬失败不烧重试预算
+        # 文案不声称压缩：worker 报告与汇总请求都不出现该说法（审查 P3）。
+        assert "压缩后仍无法继续" not in json.dumps(model.requests, ensure_ascii=False)
     finally:
         await manager.shutdown()
         resources.close()

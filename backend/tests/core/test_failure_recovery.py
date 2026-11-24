@@ -145,6 +145,8 @@ def test_deterministic_whitelist_forms(error: Exception) -> None:
         *TRANSIENT_ERRORS,
         ModelHTTPError(400, "maximum context length exceeded"),  # 硬失败，不进确定性档
         ModelHTTPError(400, "the request was malformed"),  # 未命中白名单的 400 保持 other
+        # 超限与输入拒绝关键词同现：超限是单请求条件，优先于确定性白名单（审查 P2-1）。
+        ModelHTTPError(400, "Invalid input: maximum context length is 512 tokens"),
     ],
 )
 def test_transient_and_hard_failures_stay_non_deterministic(error: Exception) -> None:

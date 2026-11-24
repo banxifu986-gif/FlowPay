@@ -15,6 +15,7 @@ from flowpay.core.json import (
     require_text,
 )
 from flowpay.core.llm.chat import ChunkSink
+from flowpay.core.llm.chat.http_error import ModelHTTPError
 from flowpay.core.llm.embedding import EmbeddingReply, EmbeddingSettings
 
 
@@ -81,13 +82,11 @@ class OpenAiEmbeddingModel:
                     await emit({"status": response.status_code, "body": await response.text()})
                     raw = require_object(await response.json())
             except APIStatusError as error:
-                await emit(
-                    {
-                        "status": error.status_code,
-                        "body": (await error.response.aread()).decode(errors="replace"),
-                    }
-                )
-                raise RuntimeError(f"Embedding HTTP {error.status_code}") from None
+                # 与 openai_chat 同一契约：类型化上抛供 failures 分类状态码与
+                # 错误正文（熔断/重试语义不再因适配器折叠而丢失）。
+                body = (await error.response.aread()).decode(errors="replace")
+                await emit({"status": error.status_code, "body": body})
+                raise ModelHTTPError(error.status_code, body) from None
         rows = [require_object(row) for row in require_list(raw.get("data", []))]
         expected = list(range(len(texts)))
         indices = [require_int(row.get("index")) for row in rows]

@@ -62,7 +62,9 @@ class FailureInfo:
 FRIENDLY: dict[FailureCategory, str] = {
     "timeout": "模型服务响应超时，已自动重试后仍未成功；请稍后再试本轮。",
     "rate_limit": "模型服务当前限流，请稍后再试。",
-    "context_over_limit": "本轮上下文超出模型上限，压缩后仍无法继续；请新建会话或精简问题。",
+    # 不声称压缩：该文案同时被嵌入/检索链路复用（直连检索无压缩步骤），
+    # 只陈述事实与建议，不描述未发生的过程。
+    "context_over_limit": "本轮上下文超出模型上限，无法继续本轮；请新建会话或精简问题。",
     "quota": "模型服务配额已用尽，请联系管理员补充额度。",
     "model_5xx": "模型服务暂时不可用，请稍后重试本轮。",
     "other": "本轮执行失败，记录已保留；可查看轨迹或继续本轮。",
@@ -74,12 +76,18 @@ def classify_failure(error: BaseException) -> FailureInfo:
 
     确定性档位按白名单叠加：只对 4xx 输入类/参数拒绝形态置位，类别与重试
     语义不变——4xx 白名单形态本就归 other（不可重试），档位只是显式标记。
+    超限形态优先于白名单：400 正文可能同时携带输入拒绝与超限关键词，
+    超限是单请求条件，不构成整轮熔断依据（审查 P2-1）。
     """
     category = _category(error)
     info = FailureInfo(
         category, category in {"timeout", "rate_limit", "model_5xx"}, FRIENDLY[category]
     )
-    if isinstance(error, ModelHTTPError) and _is_deterministic(error):
+    if (
+        isinstance(error, ModelHTTPError)
+        and category != "context_over_limit"
+        and _is_deterministic(error)
+    ):
         return FailureInfo(category, False, info.message, deterministic=True)
     return info
 
@@ -87,8 +95,9 @@ def classify_failure(error: BaseException) -> FailureInfo:
 def _is_deterministic(error: ModelHTTPError) -> bool:
     """FR-1 白名单：4xx 输入类拒绝与参数确定性拒绝；上下文超限不在此列（硬失败）。
 
-    上下文超限已在 _http_category 先行归类，不会走到本判定；正文关键词
-    小写比对，形态未命中白名单的 4xx 维持 other 档不做扩大。
+    调用方先按类别排除 context_over_limit：超限与输入拒绝关键词同现时
+    以超限优先，不置确定性档；其余正文关键词小写比对，形态未命中
+    白名单的 4xx 维持 other 档不做扩大。
     """
     if error.status_code not in DETERMINISTIC_STATUSES:
         return False

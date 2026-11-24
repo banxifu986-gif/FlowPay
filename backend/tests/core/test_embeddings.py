@@ -7,7 +7,9 @@ import pytest
 
 from flowpay.core.agent.trace import Tracer
 from flowpay.core.event_log import EventStore
+from flowpay.core.execution.failures import classify_failure
 from flowpay.core.json import JsonObject, parse_json, require_list, require_object
+from flowpay.core.llm.chat.http_error import ModelHTTPError
 from flowpay.core.llm.embedding import EmbeddingClient, EmbeddingSettings
 from flowpay.core.llm.embedding.ollama import QUERY_INSTRUCTION, query_input_for
 from flowpay.core.llm.embedding.openai_embedding import OpenAiEmbeddingModel
@@ -91,6 +93,81 @@ async def test_invalid_embedding_never_succeeds(
     assert not any(e["type"] == "embedding.response" for e in store.read("s"))
 
 
+@pytest.mark.parametrize(
+    ("status", "body", "category", "retryable", "deterministic"),
+    [
+        # ① 嵌入对查询文本的结构性拒绝（R96B FP-BM-TV-0116 形态）→ 确定性、不可重试。
+        pytest.param(
+            400,
+            '{"code":20015,"message":"The parameter is invalid. Please check again."}',
+            "other",
+            False,
+            True,
+            id="400-input-invalid",
+        ),
+        pytest.param(
+            422,
+            "unknown parameter temperature for this model",
+            "other",
+            False,
+            True,
+            id="422-param-rejected",
+        ),
+        # ② 普通形态 4xx：不命中白名单，不误熔断（other、不可重试但非确定性）。
+        pytest.param(400, "the request was malformed", "other", False, False, id="400-plain"),
+        pytest.param(422, "unprocessable content", "other", False, False, id="422-plain"),
+        # ④ 超限与输入拒绝关键词同现：超限优先，不进确定性档（审查 P2-1）。
+        pytest.param(
+            400,
+            "Invalid input: maximum context length is 512 tokens",
+            "context_over_limit",
+            False,
+            False,
+            id="400-over-limit-wins",
+        ),
+        # ③ 普通限流可重试；配额用尽语义不可重试；5xx 暂态可重试。
+        pytest.param(429, "rate limited", "rate_limit", True, False, id="429-rate-limit"),
+        pytest.param(429, "quota exceeded", "quota", False, False, id="429-quota"),
+        pytest.param(503, "upstream down", "model_5xx", True, False, id="503-transient"),
+    ],
+)
+async def test_sdk_http_error_reaches_failure_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    body: str,
+    category: str,
+    retryable: bool,
+    deterministic: bool,
+) -> None:
+    """SDK → 嵌入适配器 → 失败分类：真实适配器抛出的错误必须保持类型化契约。
+
+    修复前适配器把 APIStatusError 折叠成普通 RuntimeError，classify_failure
+    只归 other 且永不置确定性档位——本用例在修复前对非 other 边界全部失败。
+    """
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        return httpx.Response(status, text=body)
+
+    adapter = OpenAiEmbeddingModel(settings(), httpx.MockTransport(handler))
+    raw: list[JsonObject] = []
+
+    async def emit(event: JsonObject) -> None:
+        raw.append(event)
+
+    with pytest.raises(ModelHTTPError) as raised:
+        await adapter.invoke(adapter.prepare(["文本"]), emit)
+    # 原始响应追踪保留：完整错误正文先落轨迹，再按类型化契约上抛。
+    assert raw == [{"status": status, "body": body}]
+    assert raised.value.status_code == status
+    assert raised.value.body_excerpt == body
+    info = classify_failure(raised.value)
+    assert info.category == category
+    assert info.retryable is retryable
+    assert info.deterministic is deterministic
+
+
 async def test_embedding_http_error_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -164,7 +241,7 @@ async def test_sdk_embedding_request_and_no_hidden_retry(monkeypatch: pytest.Mon
     async def emit(event: JsonObject) -> None:
         raw.append(event)
 
-    with pytest.raises(RuntimeError, match="Embedding HTTP 500"):
+    with pytest.raises(ModelHTTPError, match="Model HTTP 500"):
         await adapter.invoke(recorded, emit)
     assert len(attempts) == 1
     assert str(attempts[0].url) == recorded["url"]
